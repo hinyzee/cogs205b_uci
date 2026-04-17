@@ -1,17 +1,28 @@
-import math
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import norm
 
 class SignalDetection:
-    def __init__(self, hits, misses, false_alarm, correct_rejections):
+    """
+    A class to perform Signal Detection Theory analysis.
+     - calculates sensitivity (d') and decision bias (criterion),
+     - supports arithmetic operations between SDT experimental results,
+     - provides methods for plotting distributions and ROC curves.
+
+    Attributes:
+        hits (int): Number of signal-present trials where observer responded "Yes".
+        misses (int): Number of signal-present trials where observer responded "No".
+        false_alarm (int): Number of signal-absent trials where observer responded "Yes".
+        correct_rejections (int): Number of signal-absent trials where observer responded "No".
+    """
+    def __init__(self, hits, misses, false_alarms, correct_rejections):
         self.__validate_count("hits", hits)
         self.__validate_count("misses", misses)
-        self.__validate_count("false_alarm", false_alarm)
+        self.__validate_count("false_alarms", false_alarms)
         self.__validate_count("correct_rejections", correct_rejections)
         self.__hits = int(hits)
         self.__misses = int(misses)
-        self.__false_alarm = int(false_alarm)
+        self.__false_alarms = int(false_alarms)
         self.__correct_rejections = int(correct_rejections)
 
     def __validate_count(self, name, value):
@@ -31,12 +42,12 @@ class SignalDetection:
         return self.__hits / total
 
     def false_alarm_rate(self):
-        total = self.__false_alarm + self.__correct_rejections
+        total = self.__false_alarms + self.__correct_rejections
         # avoid division by zero
         if total == 0:
             return float('nan') 
 
-        return self.__false_alarm / total
+        return self.__false_alarms / total
 
     def d_prime(self):
         hit_rate = self.hit_rate()
@@ -61,7 +72,7 @@ class SignalDetection:
         return SignalDetection(
             self.__hits + other.__hits,
             self.__misses + other.__misses,
-            self.__false_alarm + other.__false_alarm,
+            self.__false_alarms + other.__false_alarms,
             self.__correct_rejections + other.__correct_rejections
         )
     
@@ -74,7 +85,7 @@ class SignalDetection:
         return SignalDetection(
             self.__hits - other.__hits,
             self.__misses - other.__misses,
-            self.__false_alarm - other.__false_alarm,
+            self.__false_alarms - other.__false_alarms,
             self.__correct_rejections - other.__correct_rejections
         )
     
@@ -91,14 +102,14 @@ class SignalDetection:
         return SignalDetection(
             self.__hits * factor,
             self.__misses * factor,
-            self.__false_alarm * factor,
+            self.__false_alarms * factor,
             self.__correct_rejections * factor
         )
     
     def plot_sdt(self):
         d_prime = self.d_prime()
         criterion = self.criterion()
-        criterion_line = d_prime / (2 + criterion)
+        criterion_line = d_prime /2 + criterion
 
         x = np.linspace(-4, d_prime + 4, 1000)
 
@@ -169,6 +180,7 @@ class SignalDetection:
         ax.grid(True)
         
         return fig, ax
+        
         
 
 
