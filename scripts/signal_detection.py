@@ -136,7 +136,7 @@ class SignalDetection:
                 ha="center", color="gray")
 
         ax.set_xlabel("Evidence")
-        ax.set_ylabel("Probablitiy density")
+        ax.set_ylabel("Probability density")
         ax.set_title("Signal Detection Theory")
         ax.legend(loc = "upper right")
         ax.grid(True)
@@ -156,8 +156,8 @@ class SignalDetection:
         hit_rates = [s.hit_rate() for s in sdt_list]
         fa_rates = [s.false_alarm_rate() for s in sdt_list]
 
-        # sort the points by false alarm rate for a cleaner ROC curve
-        sorted_indices = np.argsort(fa_rates)
+        # sort the points 
+        sorted_indices = np.argsort(hit_rates)
         hit_rates = [hit_rates[i] for i in sorted_indices]
         fa_rates = [fa_rates[i] for i in sorted_indices]
         
@@ -181,6 +181,3 @@ class SignalDetection:
         
         return fig, ax
         
-        
-
-
