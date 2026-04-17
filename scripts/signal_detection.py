@@ -168,13 +168,13 @@ class SignalDetection:
         
 
         fig, ax = plt.subplots(figsize=(8, 8))
-        ax.plot(fa_rates, hit_rates, marker='o', label='ROC Curve')
+        ax.plot(hit_rates, fa_rates, marker='o', label='ROC Curve')
         ax.plot(
             [0, 1], [0, 1], linestyle='--',
             color='gray', label='Chance Level'
             )
-        ax.set_xlabel('False Alarm Rate')
-        ax.set_ylabel('Hit Rate')
+        ax.set_ylabel('False Alarm Rate')
+        ax.set_xlabel('Hit Rate')
         ax.set_title('ROC Curve')
         ax.legend(loc='lower right')
         ax.grid(True)
