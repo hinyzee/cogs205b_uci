@@ -135,9 +135,9 @@ class SignalDetection:
         ax.text(d_prime / 2, y_top * 1.03, f"d' = {d_prime:.2f}",
                 ha="center", color="gray")
 
-        ax.set_xlabel("Evidence")
-        ax.set_ylabel("Probability density")
-        ax.set_title("Signal Detection Theory")
+        ax.set_xlabel("Decision Variable")
+        ax.set_ylabel("Density")
+        ax.set_title("Signal Detection Theory Distributions")
         ax.legend(loc = "upper right")
         ax.grid(True)
 
@@ -156,8 +156,8 @@ class SignalDetection:
         hit_rates = [s.hit_rate() for s in sdt_list]
         fa_rates = [s.false_alarm_rate() for s in sdt_list]
 
-        # sort the points 
-        sorted_indices = np.argsort(hit_rates)
+        # Sort by false alarm rate so x-values are monotonic.
+        sorted_indices = np.argsort(fa_rates)
         hit_rates = [hit_rates[i] for i in sorted_indices]
         fa_rates = [fa_rates[i] for i in sorted_indices]
         
@@ -168,13 +168,13 @@ class SignalDetection:
         
 
         fig, ax = plt.subplots(figsize=(8, 8))
-        ax.plot(hit_rates, fa_rates, marker='o', label='ROC Curve')
+        ax.plot(fa_rates, hit_rates, marker='o', label='ROC Curve')
         ax.plot(
             [0, 1], [0, 1], linestyle='--',
             color='gray', label='Chance Level'
             )
-        ax.set_ylabel('False Alarm Rate')
-        ax.set_xlabel('Hit Rate')
+        ax.set_xlabel('False Alarm Rate')
+        ax.set_ylabel('Hit Rate')
         ax.set_title('ROC Curve')
         ax.legend(loc='lower right')
         ax.grid(True)
