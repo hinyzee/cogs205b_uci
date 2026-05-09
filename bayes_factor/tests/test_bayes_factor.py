@@ -1,4 +1,5 @@
 import unittest
+import scipy.integrate
 import bayes_factor
 
 
@@ -114,12 +115,16 @@ class TestBayesFactor(unittest.TestCase):
     def test_evidence_spike_is_non_negative(self):
         self.assertGreaterEqual(self.bf.evidence_spike(), 0)
 
-    def test_evidence_spike_is_likelihood_at_half(self):
-        # The spike model is treated as a point spike at theta = 0.5
+    def test_evidence_spike_is_interval_average(self):
         bf = bayes_factor.BayesFactor(n=10, k=3)
+        low = 0.4999
+        high = 0.5001
+        result, _ = scipy.integrate.quad(bf.likelihood, low, high)
+        expected = result / (high - low)
+
         self.assertAlmostEqual(
             bf.evidence_spike(),
-            bf.likelihood(0.5),
+            expected,
             places=6
         )
 
@@ -137,18 +142,17 @@ class TestBayesFactor(unittest.TestCase):
         self.assertAlmostEqual(self.bf.bayes_factor(), expected, places=6)
 
     def test_bayes_factor_favors_spike_for_balanced_data(self):
-        # k = n/2 is exactly what spike (theta = 0.5) predicts
+        # k = n/2 is exactly what the narrow spike around theta = 0.5 predicts
         bf = bayes_factor.BayesFactor(n=10, k=5)
         self.assertGreater(bf.bayes_factor(), 1.0)
 
     def test_bayes_factor_favors_slab_for_extreme_data(self):
-        # k = 0 is terrible evidence for theta = 0.5
         bf = bayes_factor.BayesFactor(n=10, k=0)
         self.assertLess(bf.bayes_factor(), 1.0)
 
     def test_bayes_factor_handles_zero_trials(self):
         bf = bayes_factor.BayesFactor(n=0, k=0)
-        self.assertEqual(bf.bayes_factor(), 1.0)
+        self.assertAlmostEqual(bf.bayes_factor(), 1.0)
 
     # intentional failure check 
 

@@ -10,10 +10,7 @@ class BayesFactor:
         theta ~ U(0, 1)
 
     Spike model:
-        theta = 0.5
-
-    The spike is treated as a point-spike model rather than an arbitrary
-    narrow interval such as [0.4999, 0.5001].
+        theta ~ U(0.4999, 0.5001)
     """
 
     def __init__(self, n, k):
@@ -48,7 +45,10 @@ class BayesFactor:
         return float(result)
 
     def evidence_spike(self):
-        return self.likelihood(0.5)
+        low = 0.4999
+        high = 0.5001
+        result, _ = scipy.integrate.quad(self.likelihood, low, high)
+        return float(result / (high - low))
 
     def bayes_factor(self):
         return self.evidence_spike() / self.evidence_slab()
