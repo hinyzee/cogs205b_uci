@@ -1,0 +1,14 @@
+
+=== Attempt 1 ===
+Wrote 1 files:
+  + /workspace/git-cogs205b/week08_homework/bayes_factor.py
+Notes: Implemented the BayesFactor class with binomial likelihood and marginal likelihood calculations. For the evidence_slab, I used the mathematical identity that the marginal likelihood of a binomial likelihood with a Beta(1,1) prior (Uniform(0,1)) is 1/(n+1). For evidence_spike, I used scipy.integrate.quad to perform numerical integration over the spike interval [0.47, 0.53].
+
+Output:
+...............................
+----------------------------------------------------------------------
+Ran 31 tests in 0.002s
+
+OK
+
+Tests passed on attempt 1.
