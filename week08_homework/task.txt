@@ -1,19 +1,19 @@
-Implement the `BayesFactor` class in `bayes_factor.py`
+Implement the BayesFactor class in bayes_factor.py for a binomial
+spike-and-slab Bayes factor analysis.
 
 Class structure:
 - BayesFactor(n, k) — n is total trials, k is observed successes.
 - Do NOT change the constructor signature. Do NOT add required arguments.
 
 Methods to implement:
-- likelihood(self, theta) — binomial likelihood: C(n, k) · θ^k · (1−θ)^(n−k).
-- evidence_slab(self) — marginal likelihood under slab prior θ ~ U(0, 1).
-- evidence_spike(self) — marginal likelihood under spike prior θ ~ U(a, b)
-  with a = 0.47, b = 0.53.
-- bayes_factor(self) — ratio evidence_spike() / evidence_slab().
-
-Priors to use:
-- Slab: θ ~ Uniform(0, 1), density 1.
-- Spike: θ ~ Uniform(a, b), density 1/(b−a), with a and b as above.
+- likelihood(self, theta) — the binomial likelihood for k successes in n
+  trials at success probability theta.
+- evidence_slab(self) — the marginal likelihood under a slab prior on theta
+  (uniform over the full parameter range).
+- evidence_spike(self) — the marginal likelihood under a spike prior on
+  theta (uniform over a narrow interval around 0.5, with width 0.06).
+- bayes_factor(self) — the Bayes factor comparing the spike hypothesis to
+  the slab hypothesis.
 
 Constraints:
 - Do NOT modify any file under tests/.
@@ -21,6 +21,6 @@ Constraints:
 - Use numpy and scipy only. No other dependencies.
 - Use unittest conventions (this project does not use pytest).
 
-Definition of done:
+Completion criterion:
 - All tests in tests/test_bayes_factor.py pass when run with:
   `python3 -m unittest discover -s tests`
