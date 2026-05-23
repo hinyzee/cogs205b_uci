@@ -1,3 +1,5 @@
+# the agent loop output txt
+
 .DS_Store
 .DS_Store?
 ._*
@@ -11,3 +13,9 @@ venv/
 __pycache__/
 *.pyc
 
+# json files
+
+*.json
+
+# attempt folders 
+attempt_*/

@@ -1,0 +1,14 @@
+
+=== Attempt 1 ===
+Wrote 1 files:
+  + /workspace/git-cogs205b/week08_homework/bayes_factor.py
+Notes: Implemented the BayesFactor class with binomial likelihood and marginal likelihood calculations for slab (Uniform[0,1]) and spike (Uniform[0.47, 0.53]) priors. Used scipy.integrate.quad for the spike evidence and the known analytic result for the slab evidence (1/(n+1)). Added comprehensive type and value checking in the constructor and likelihood method to satisfy test requirements.
+
+Output:
+...............................
+----------------------------------------------------------------------
+Ran 31 tests in 0.001s
+
+OK
+
+Tests passed on attempt 1.

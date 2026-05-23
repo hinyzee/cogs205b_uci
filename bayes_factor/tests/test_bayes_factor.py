@@ -1,5 +1,4 @@
 import unittest
-import scipy.integrate
 import bayes_factor
 
 
@@ -8,8 +7,7 @@ class TestBayesFactor(unittest.TestCase):
     def setUp(self):
         self.bf = bayes_factor.BayesFactor(n=10, k=3)
 
-    # input validation tests
-
+    # constructor validation
     def test_constructor_stores_n_and_k(self):
         self.assertEqual(self.bf.n, 10)
         self.assertEqual(self.bf.k, 3)
@@ -18,33 +16,6 @@ class TestBayesFactor(unittest.TestCase):
         bf = bayes_factor.BayesFactor(10, 3)
         self.assertEqual(bf.n, 10)
         self.assertEqual(bf.k, 3)
-
-    def test_likelihood_returns_float(self):
-        result = self.bf.likelihood(0.5)
-        self.assertIsInstance(result, float)
-
-    def test_likelihood_at_theta_zero_with_successes_is_zero(self):
-        self.assertEqual(self.bf.likelihood(0), 0)
-
-    def test_likelihood_at_theta_one_with_failures_is_zero(self):
-        self.assertEqual(self.bf.likelihood(1), 0)
-
-    def test_likelihood_known_value(self):
-        # For n=2, k=1, theta=0.5: C(2,1) * 0.5^1 * 0.5^1 = 2 * 0.25 = 0.5
-        bf = bayes_factor.BayesFactor(n=2, k=1)
-        self.assertAlmostEqual(bf.likelihood(0.5), 0.5)
-
-    def test_likelihood_rejects_invalid_theta(self):
-        with self.assertRaisesRegex(ValueError, r"theta must be in \[0, 1\]"):
-            self.bf.likelihood(-0.1)
-        with self.assertRaisesRegex(ValueError, r"theta must be in \[0, 1\]"):
-            self.bf.likelihood(1.5)
-
-    def test_likelihood_rejects_non_numeric_theta(self):
-        with self.assertRaisesRegex(TypeError, "theta must be numeric"):
-            self.bf.likelihood("0.5")
-
-    # constructor validation
 
     def test_constructor_rejects_k_greater_than_n(self):
         with self.assertRaisesRegex(ValueError, "k cannot exceed n"):
@@ -78,6 +49,32 @@ class TestBayesFactor(unittest.TestCase):
         bf = bayes_factor.BayesFactor(n=0, k=0)
         self.assertEqual(bf.n, 0)
         self.assertEqual(bf.k, 0)
+
+    def test_likelihood_returns_float(self):
+        result = self.bf.likelihood(0.5)
+        self.assertIsInstance(result, float)
+
+    def test_likelihood_at_theta_zero_with_successes_is_zero(self):
+        self.assertEqual(self.bf.likelihood(0), 0)
+
+    def test_likelihood_at_theta_one_with_failures_is_zero(self):
+        self.assertEqual(self.bf.likelihood(1), 0)
+
+    def test_likelihood_known_value(self):
+        # For n=2, k=1, theta=0.5: C(2,1) * 0.5^1 * 0.5^1 = 2 * 0.25 = 0.5
+        bf = bayes_factor.BayesFactor(n=2, k=1)
+        self.assertAlmostEqual(bf.likelihood(0.5), 0.5)
+
+    def test_likelihood_rejects_invalid_theta(self):
+        with self.assertRaisesRegex(ValueError, r"theta must be in \[0, 1\]"):
+            self.bf.likelihood(-0.1)
+        with self.assertRaisesRegex(ValueError, r"theta must be in \[0, 1\]"):
+            self.bf.likelihood(1.5)
+
+    def test_likelihood_rejects_non_numeric_theta(self):
+        with self.assertRaisesRegex(TypeError, "theta must be numeric"):
+            self.bf.likelihood("0.5")
+
 
     def test_required_methods_exist_and_are_callable(self):
         for method_name in ["likelihood", "evidence_slab", "evidence_spike", "bayes_factor"]:
