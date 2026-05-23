@@ -1,11 +1,8 @@
 import numpy as np
-from scipy.integrate import quad
+from scipy import integrate
 from scipy.special import comb
 
 class BayesFactor:
-    """
-    A class for binomial spike-and-slab Bayes factor analysis.
-    """
     def __init__(self, n, k):
         if not isinstance(n, int):
             raise TypeError("n must be an integer")
@@ -22,48 +19,34 @@ class BayesFactor:
         self.k = k
 
     def likelihood(self, theta):
-        """
-        Calculates the binomial likelihood for k successes in n trials at success probability theta.
-        """
         if not isinstance(theta, (int, float, np.number)):
             raise TypeError("theta must be numeric")
         if not (0 <= theta <= 1):
             raise ValueError("theta must be in [0, 1]")
         
+        # Binomial likelihood: C(n, k) * theta^k * (1-theta)^(n-k)
         return float(comb(self.n, self.k) * (theta**self.k) * ((1 - theta)**(self.n - self.k)))
 
     def evidence_slab(self):
-        """
-        Calculates the marginal likelihood under a slab prior (uniform over [0, 1]).
-        The integral of the binomial likelihood over [0, 1] is 1/(n+1).
-        """
-        # Marginal likelihood = Integral(Likelihood(theta) * Prior(theta) dtheta)
-        # Prior(theta) = 1 for theta in [0, 1]
-        # Integral of comb(n, k) * theta^k * (1-theta)^(n-k) from 0 to 1 is 1/(n+1).
+        # Slab prior is uniform over [0, 1].
+        # Marginal likelihood = integral from 0 to 1 of likelihood(theta) * 1 d_theta.
+        # The integral of C(n, k) * theta^k * (1-theta)^(n-k) from 0 to 1 is 1 / (n + 1).
         return 1.0 / (self.n + 1)
 
     def evidence_spike(self):
-        """
-        Calculates the marginal likelihood under a spike prior (uniform over [0.47, 0.53]).
-        The width is 0.06.
-        """
+        # Spike prior is uniform over [0.47, 0.53].
+        # Width = 0.06
         low = 0.47
         high = 0.53
-        # Prior(theta) = 1/width = 1/0.06 for theta in [0.47, 0.53], else 0.
-        # Marginal likelihood = (1/0.06) * Integral(Likelihood(theta) dtheta from 0.47 to 0.53)
-        res, _ = quad(self.likelihood, low, high)
-        return float(res / 0.06)
+        width = high - low
+        
+        # Marginal likelihood = (1/width) * integral from low to high of likelihood(theta) d_theta
+        result, _ = integrate.quad(self.likelihood, low, high)
+        return float(result / width)
 
     def bayes_factor(self):
-        """
-        Calculates the Bayes factor comparing the spike hypothesis to the slab hypothesis.
-        """
-        # BF = Evidence(Spike) / Evidence(Slab)
-        ev_spike = self.evidence_spike()
-        ev_slab = self.evidence_slab()
+        e_spike = self.evidence_spike()
+        e_slab = self.evidence_slab()
         
-        # Handle edge case: n=0, k=0
-        if self.n == 0:
-            return 1.0
-        
-        return float(ev_spike / ev_slab)
+        # BF = P(D | H_spike) / P(D | H_slab)
+        return e_spike / e_slab
