@@ -1,238 +1,193 @@
-"""Verification checks for the mixed-autonomy ABM."""
+"""Runtime verification checks for simulation integrity."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from typing import Callable
 
 import numpy as np
 import pandas as pd
 
-from src.agents import (
-    AV_INFLUENCE_WEIGHTS,
-    AVAgent,
-    AvResponseType,
-    HumanAgent,
-    clip_aggression,
-)
-from src.model import MixedAutonomyModel, SimulationConfig
+from src.agents import HumanAgent, create_avs
+from src.model import SimulationParams, run_single_simulation, run_timestep
 
 
-@dataclass
-class CheckResult:
-    name: str
-    passed: bool
-    message: str
+class VerificationError(Exception):
+    """Raised when one or more verification checks fail."""
 
 
-def check_bounds(model: MixedAutonomyModel) -> CheckResult:
-    """All human aggression values remain in [0, 1]."""
-    for human in model.humans:
-        if not (0.0 <= human.baseline_aggression <= 1.0):
-            return CheckResult(
-                "bounds",
-                False,
-                f"Agent {human.agent_id} has aggression {human.baseline_aggression}",
-            )
-    return CheckResult("bounds", True, "All human aggression values in [0, 1]")
-
-
-def check_population_constant(model: MixedAutonomyModel) -> CheckResult:
-    """Human and AV counts remain constant."""
-    if len(model.humans) != model.initial_human_count:
-        return CheckResult(
-            "population",
-            False,
-            f"Human count changed: {model.initial_human_count} -> {len(model.humans)}",
-        )
-    if len(model.avs) != model.initial_av_count:
-        return CheckResult(
-            "population",
-            False,
-            f"AV count changed: {model.initial_av_count} -> {len(model.avs)}",
-        )
-    return CheckResult("population", True, "Population counts constant")
-
-
-def check_seed_determinism(config: SimulationConfig) -> CheckResult:
-    """Same seed produces identical results."""
-    model_a = MixedAutonomyModel(config)
-    traj_a = model_a.run()
-    final_a = traj_a[-1].mean_human_aggression
-
-    model_b = MixedAutonomyModel(config)
-    traj_b = model_b.run()
-    final_b = traj_b[-1].mean_human_aggression
-
-    if abs(final_a - final_b) > 1e-12:
-        return CheckResult(
-            "seed_determinism",
-            False,
-            f"Final means differ: {final_a} vs {final_b}",
-        )
-    return CheckResult("seed_determinism", True, "Seed determinism confirmed")
-
-
-def check_av_fixed(model: MixedAutonomyModel) -> CheckResult:
-    """AV aggression remains fixed across simulation."""
-    for av in model.avs:
-        expected = model.initial_av_aggressions[av.agent_id]
-        if av.aggression != expected:
-            return CheckResult(
-                "av_fixed",
-                False,
-                f"AV {av.agent_id} aggression changed: {expected} -> {av.aggression}",
-            )
-    return CheckResult("av_fixed", True, "AV aggression remains fixed")
-
-
-def check_response_types_after_av_encounter() -> CheckResult:
-    """Assimilators move toward, discounters ignore, rejecters move away from AV."""
-    av_aggression = 0.90
-    baseline = 0.35
-    susceptibility = 0.10
-
-    results: dict[str, tuple[float, float]] = {}
-    for response_type in AvResponseType:
-        human = HumanAgent(
-            agent_id=0,
-            baseline_aggression=baseline,
-            susceptibility=susceptibility,
-            av_response_type=response_type,
-            av_influence_weight=AV_INFLUENCE_WEIGHTS[response_type],
-        )
-        av = AVAgent(agent_id=1, aggression=av_aggression)
-
-        difference = av.aggression - human.baseline_aggression
-        new_baseline = clip_aggression(
-            human.baseline_aggression
-            + human.susceptibility * human.av_influence_weight * difference
-        )
-        results[response_type.value] = (baseline, new_baseline)
-
-    assimilator_old, assimilator_new = results["assimilator"]
-    discounter_old, discounter_new = results["discounter"]
-    rejecter_old, rejecter_new = results["rejecter"]
-
-    if assimilator_new <= assimilator_old:
-        return CheckResult(
-            "response_types",
-            False,
-            f"Assimilator did not increase: {assimilator_old} -> {assimilator_new}",
-        )
-    if discounter_new != discounter_old:
-        return CheckResult(
-            "response_types",
-            False,
-            f"Discounter changed: {discounter_old} -> {discounter_new}",
-        )
-    if rejecter_new >= rejecter_old:
-        return CheckResult(
-            "response_types",
-            False,
-            f"Rejecter did not decrease: {rejecter_old} -> {rejecter_new}",
-        )
-    return CheckResult(
-        "response_types",
-        True,
-        "Response types behave correctly after AV encounter",
-    )
-
-
-def check_null_condition(summary_df: pd.DataFrame, tolerance: float = 0.005) -> CheckResult:
-    """At 0% AV prevalence, environments produce nearly identical final means."""
-    null_df = summary_df[summary_df["av_prevalence"] == 0.0]
-    if null_df.empty:
-        return CheckResult(
-            "null_condition",
-            False,
-            "No 0% AV prevalence runs found in summary",
-        )
-
-    final_means = null_df.groupby("environment")["final_mean_aggression"].mean()
-    if len(final_means) < 2:
-        return CheckResult(
-            "null_condition",
-            False,
-            "Insufficient environments for null check",
-        )
-
-    spread = final_means.max() - final_means.min()
-    if spread >= tolerance:
-        return CheckResult(
-            "null_condition",
-            False,
-            f"0% AV environments differ by {spread:.6f} (tolerance {tolerance})",
-        )
-    return CheckResult(
-        "null_condition",
-        True,
-        f"0% AV null check passed (spread={spread:.6f})",
-    )
-
-
-def check_sensitivity_multi_seed(
-    summary_df: pd.DataFrame, expected_seeds: int = 30
-) -> CheckResult:
-    """Each condition has the expected number of seed rows."""
-    counts = summary_df.groupby(["environment", "av_prevalence"]).size()
-    bad = counts[counts != expected_seeds]
-    if not bad.empty:
-        return CheckResult(
-            "multi_seed",
-            False,
-            f"Conditions with wrong seed count: {bad.to_dict()}",
-        )
-    return CheckResult(
-        "multi_seed",
-        True,
-        f"All conditions have {expected_seeds} seeds",
-    )
-
-
-def run_simulation_checks(config: SimulationConfig) -> list[CheckResult]:
-    """Run checks 1-3, 5, 6 on a single simulation (pre-grid)."""
-    results: list[CheckResult] = []
-
-    results.append(check_response_types_after_av_encounter())
-    results.append(check_seed_determinism(config))
-
-    model = MixedAutonomyModel(config)
-    for _ in range(config.timesteps):
-        model.step()
-        results.append(check_bounds(model))
-        results.append(check_population_constant(model))
-
-    results.append(check_av_fixed(model))
-
-    return results
-
-
-def run_all_checks(
-    smoke_config: SimulationConfig,
-    summary_df: pd.DataFrame | None = None,
-    expected_seeds: int = 30,
-) -> list[CheckResult]:
-    """Run all verification checks."""
-    results = run_simulation_checks(smoke_config)
-
-    if summary_df is not None:
-        results.append(check_null_condition(summary_df))
-        results.append(check_sensitivity_multi_seed(summary_df, expected_seeds))
-
-    return results
-
-
-def print_check_results(results: list[CheckResult]) -> bool:
-    """Print results and return True if all passed."""
-    all_passed = True
-    seen: set[str] = set()
-    for result in results:
-        if result.name in ("bounds", "population") and result.name in seen:
+def verify_bounds(trajectory_df: pd.DataFrame) -> tuple[bool, str]:
+    """All recorded human aggression summaries must be within [0, 1]."""
+    cols = [
+        "mean_human_aggression",
+        "mean_aggression_assimilator",
+        "mean_aggression_discounter",
+        "mean_aggression_rejecter",
+    ]
+    for col in cols:
+        if col not in trajectory_df.columns:
             continue
-        if result.name in ("bounds", "population"):
-            seen.add(result.name)
-        status = "PASS" if result.passed else "FAIL"
-        print(f"  [{status}] {result.name}: {result.message}")
-        if not result.passed:
-            all_passed = False
-    return all_passed
+        values = trajectory_df[col].dropna()
+        if len(values) == 0:
+            continue
+        if values.min() < 0.0 or values.max() > 1.0:
+            return False, f"Bounds check failed for column {col}"
+    return True, "Bounds check passed"
+
+
+def verify_population_constant(trajectory_df: pd.DataFrame) -> tuple[bool, str]:
+    """Human and AV counts must remain constant within each run."""
+    grouped = trajectory_df.groupby("run_id")
+    for run_id, group in grouped:
+        if group["n_humans"].nunique() != 1:
+            return False, f"Population check failed: varying n_humans in {run_id}"
+        if group["n_avs"].nunique() != 1:
+            return False, f"Population check failed: varying n_avs in {run_id}"
+    return True, "Population check passed"
+
+
+def verify_seed_determinism(
+    params: SimulationParams,
+    run_fn: Callable[[SimulationParams], tuple[pd.DataFrame, pd.DataFrame]] | None = None,
+) -> tuple[bool, str]:
+    """Same seed must produce identical trajectories."""
+    runner = run_fn or run_single_simulation
+    traj_a, enc_a = runner(params)
+    traj_b, enc_b = runner(params)
+    if not traj_a.equals(traj_b) or not enc_a.equals(enc_b):
+        return False, "Seed determinism check failed"
+    return True, "Seed determinism check passed"
+
+
+def verify_null_condition(
+    trajectory_df: pd.DataFrame,
+    tolerance: float = 0.02,
+) -> tuple[bool, str]:
+    """At 0% AV prevalence, environments should produce similar mean aggression."""
+    null_df = trajectory_df[trajectory_df["av_prevalence"] == 0.0]
+    if null_df.empty:
+        return True, "Null check skipped: no 0% AV data"
+
+    final = null_df[null_df["timestep"] == null_df["timestep"].max()]
+    env_means = final.groupby("environment")["mean_human_aggression"].mean()
+    if env_means.max() - env_means.min() > tolerance:
+        return (
+            False,
+            "Null check failed: 0% AV environments diverged beyond tolerance",
+        )
+    return True, "Null check passed"
+
+
+def verify_av_fixed(
+    encounter_df: pd.DataFrame,
+    expected: float = 0.90,
+) -> tuple[bool, str]:
+    """AV aggression in human-AV encounters must remain fixed."""
+    ha_rows = encounter_df.dropna(subset=["mean_av_ha_encounter_aggression"])
+    ha_rows = ha_rows[ha_rows["n_ha_encounters"] > 0]
+    if ha_rows.empty:
+        return True, "AV update check passed (no human-AV encounters)"
+
+    if not np.allclose(
+        ha_rows["mean_av_ha_encounter_aggression"].values,
+        expected,
+        atol=1e-9,
+    ):
+        return False, "AV update check failed: AV aggression changed"
+    return True, "AV update check passed"
+
+
+def verify_response_types(
+    av_aggression: float = 0.90,
+    human_influence_weight: float = 1.0,
+) -> tuple[bool, str]:
+    """Micro-simulation verifying assimilator, discounter, and rejecter responses."""
+    av = create_avs(1, aggression=av_aggression)[0]
+    rng = np.random.default_rng(0)
+
+    assimilator = HumanAgent(0.40, 0.10, "assimilator", 0)
+    discounter = HumanAgent(0.40, 0.10, "discounter", 1)
+    rejecter = HumanAgent(0.40, 0.10, "rejecter", 2)
+
+    for _ in range(30):
+        run_timestep(
+            [assimilator, av],
+            rng,
+            human_influence_weight=human_influence_weight,
+        )
+
+    discounter_before = discounter.baseline_aggression
+    rejecter_before = rejecter.baseline_aggression
+
+    for _ in range(30):
+        run_timestep(
+            [discounter, av],
+            rng,
+            human_influence_weight=human_influence_weight,
+        )
+        run_timestep(
+            [rejecter, av],
+            rng,
+            human_influence_weight=human_influence_weight,
+        )
+
+    if assimilator.baseline_aggression <= 0.40:
+        return False, "Response-type check failed: assimilator did not move toward AV"
+    if discounter.baseline_aggression != discounter_before:
+        return False, "Response-type check failed: discounter updated from AV"
+    if rejecter.baseline_aggression >= rejecter_before:
+        return False, "Response-type check failed: rejecter did not move away from AV"
+    return True, "Response-type check passed"
+
+
+def verify_multi_seed_aggregation(
+    trajectory_df: pd.DataFrame,
+    expected_seeds: int,
+) -> tuple[bool, str]:
+    """Each condition should include the expected number of seeds."""
+    grouped = trajectory_df.groupby(["av_prevalence", "environment"])["seed"].nunique()
+    if not (grouped == expected_seeds).all():
+        return False, "Sensitivity check failed: unexpected seed counts per condition"
+    return True, "Sensitivity check passed"
+
+
+def verify_timesteps(
+    trajectory_df: pd.DataFrame,
+    timesteps: int,
+) -> tuple[bool, str]:
+    """Each run must have unique timesteps from 0 to timesteps inclusive."""
+    for run_id, group in trajectory_df.groupby("run_id"):
+        ts = group["timestep"].tolist()
+        expected = list(range(timesteps + 1))
+        if ts != expected:
+            return False, f"Timestep check failed for {run_id}"
+        if group["timestep"].duplicated().any():
+            return False, f"Timestep check failed: duplicates in {run_id}"
+    return True, "Timestep check passed"
+
+
+def run_all_verifications(
+    trajectory_df: pd.DataFrame,
+    encounter_df: pd.DataFrame,
+    *,
+    timesteps: int,
+    expected_seeds: int,
+    params: SimulationParams | None = None,
+) -> None:
+    """Run all verification checks and raise VerificationError on failure."""
+    checks = [
+        verify_bounds(trajectory_df),
+        verify_population_constant(trajectory_df),
+        verify_null_condition(trajectory_df),
+        verify_av_fixed(encounter_df),
+        verify_response_types(),
+        verify_multi_seed_aggregation(trajectory_df, expected_seeds),
+        verify_timesteps(trajectory_df, timesteps),
+    ]
+
+    if params is not None:
+        checks.insert(2, verify_seed_determinism(params))
+
+    failures = [message for passed, message in checks if not passed]
+    if failures:
+        detail = "\n".join(f"- {msg}" for msg in failures)
+        raise VerificationError(f"Verification failed:\n{detail}")

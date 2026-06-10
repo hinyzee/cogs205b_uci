@@ -1,290 +1,354 @@
----
-name: Mixed-Autonomy ABM Plan
-overview: Implement a reproducible Python ABM in `abm-project/` that models how human drivers update baseline aggression under repeated random-mixing encounters with fixed aggressive AVs, crossing AV prevalence and AV-response environments, with full verification, CSV outputs, plots, Docker, and README.
-todos:
-  - id: agents-module
-    content: "Implement src/agents.py: enums, dataclasses, population factories, clip helper, response-type assignment"
-    status: pending
-  - id: model-engine
-    content: "Implement src/model.py: SimulationConfig, MixedAutonomyModel with shuffle-pairing, synchronous updates, TimestepMetrics"
-    status: pending
-  - id: verification
-    content: "Implement src/verification.py: 7 checks including AV micro-sim and seed determinism"
-    status: pending
-  - id: experiments-grid
-    content: "Implement src/experiments.py: 270-run factorial grid, hierarchical seeds, CSV writers"
-    status: pending
-  - id: plotting
-    content: "Implement src/plotting.py: 4 required plots + optional HH-encounter plot with Okabe-Ito styling"
-    status: pending
-  - id: entrypoint-infra
-    content: Implement run_simulation.py, requirements.txt, Dockerfile, README.md, PLAN.md, normalize file casing, gitignore results/
-    status: pending
-isProject: false
----
-
 # Mixed-Autonomy Traffic ABM — Implementation Plan
-
-This plan implements the toy agent-based model specified in [prompt.md](git-cogs205b/abm-project/prompt.md) and [skill.md](git-cogs205b/abm-project/skill.md). It is intended to be saved as `PLAN.md` and executed without further design decisions.
 
 ## 1. Scientific model summary
 
-**Research question:** Can aggressive autonomous vehicles shift human driving norms, or does their effect depend on whether humans treat AV behavior as legitimate, irrelevant, or negative outgroup behavior?
+**Research question:** Can aggressive AVs shift human driving norms, or does the effect depend on whether humans treat AV behavior as legitimate, irrelevant, or negative outgroup behavior?
 
-**Mechanism:** At each timestep, all 200 agents are shuffled and paired sequentially (100 pairs). Pairings dissolve after the timestep. Humans update `baseline_aggression` based on what they observe; AVs are fixed at `0.90` and never learn.
+**Mechanism:** Dynamic random-mixing topology — not a traffic simulator. At each timestep, agents shuffle, pair into temporary encounters, observe partner aggression, compute updates from **pre-update** values, apply all updates, then dissolve pairings.
 
-**Three human AV-response types:**
+**Hypotheses (tested via 9 conditions × 30 seeds):**
 
-| Type | `av_influence_weight` | Behavior after AV encounter |
-|------|----------------------:|----------------------------|
-| assimilator | +0.50 | Move toward AV aggression |
-| discounter | 0.00 | No update from AV |
-| rejecter | -0.50 | Move away from AV aggression |
+| Mechanism | Expected signal |
+|-----------|----------------|
+| Shared norm shift | Mean human baseline aggression rises over time, especially in **mostly_assimilation** at 25–50% AV prevalence |
+| Rejection | Little or negative mean shift in **mostly_rejection** |
+| Polarization | Variance rises in **mixed** environment |
 
-**Hypothesized population patterns:**
-
-- **Mostly assimilation (70/20/10):** mean aggression rises with AV prevalence
-- **Mostly rejection (10/20/70):** mean aggression flat or falls with AV prevalence
-- **Mixed (45/10/45):** variance rises (polarization) with AV prevalence
-
-**Design decisions (resolved):**
-
-- Human-human pairs: **both agents update simultaneously** from pre-update baselines (avoids order bias)
-- Pairing: **shuffle all agents, pair sequentially** (one encounter per agent per timestep; with `N=200`, no leftover agent)
-- Updates are **synchronous within a timestep**: compute all `new_baseline` values, then apply
+**Key diagnostic:** Human-human encounter aggression after AV exposure — not just aggression during AV encounters.
 
 ```mermaid
 flowchart TD
-    init[Initialize population] --> loop{timestep < T?}
-    loop -->|yes| shuffle[Shuffle agent indices]
-    shuffle --> pair[Form N/2 disjoint pairs]
-    pair --> classify{Pair type?}
-    classify -->|human-human| hh[Both humans update via human rule]
-    classify -->|human-AV| ha[Human updates via AV rule; AV fixed]
-    classify -->|AV-AV| aa[No updates]
-    hh --> clip[Clip all human baselines to 0,1]
-    ha --> clip
-    aa --> clip
-    clip --> record[Record timestep metrics]
-    record --> loop
-    loop -->|no| save[Save CSVs and plots]
+    init["t=0: initialize population"] --> shuffle["Shuffle all agents"]
+    shuffle --> pair["Pair into encounters; skip one if odd"]
+    pair --> observe["Observe partner aggression"]
+    observe --> compute["Compute all updates from pre-update baselines"]
+    compute --> apply["Apply updates; clip humans to 0,1"]
+    apply --> record["Record timestep metrics"]
+    record --> check{"timestep < T?"}
+    check -->|yes| shuffle
+    check -->|no| save["Save CSVs and plots"]
 ```
 
 ---
 
 ## 2. File structure
 
+All paths relative to [`git-cogs205b/abm-project/`](git-cogs205b/abm-project/).
+
 ```text
 abm-project/
-  PROMPT.md              # rename/copy from prompt.md (canonical casing)
-  PLAN.md                # this plan
-  SKILL.md               # rename/copy from skill.md
+  PROMPT.md              # exists
+  SKILL.md               # exists
+  PLAN.md                # this plan (created on approval)
   README.md
   Dockerfile
   requirements.txt
   run_simulation.py
   src/
-    __init__.py
-    agents.py
-    model.py
-    experiments.py
-    verification.py
-    plotting.py
-  results/               # gitignored outputs (CSVs + PNGs)
-    trajectories/
-    summaries/
+    __init__.py          # exports key public API
+    agents.py            # agent types, init, clipping, response-type assignment
+    model.py             # pairing, update rules, single-run simulation
+    experiments.py       # parameter grid, hierarchical seeds, aggregation
+    verification.py      # runtime checks (fail loudly)
+    plotting.py          # matplotlib figures with Okabe-Ito palette
+  tests/
+    test_agents.py
+    test_model.py
+    test_verification.py
+    test_experiments.py
+  results/               # gitignored; created at runtime
+    trajectories.csv
+    encounter_metrics.csv
+    summary_by_timestep.csv
+    summary_final.csv
     plots/
+      mean_aggression_over_time.png
+      variance_over_time.png
+      final_mean_by_condition.png
+      final_variance_by_condition.png
+      human_human_encounter_aggression.png
 ```
 
-**Dependencies** (`requirements.txt`): `numpy`, `pandas`, `matplotlib` (pin minor versions for Docker reproducibility).
+[`git-cogs205b/abm-project/.gitignore`](git-cogs205b/abm-project/.gitignore) already ignores `results/`, `__pycache__/`, `*.pyc` — no change needed.
 
 ---
 
-## 3. Data structures
+## 3. Default parameters
 
-### Enums / constants (`src/agents.py`)
+| Parameter | Value |
+|-----------|-------|
+| `N_agents` | 200 |
+| `timesteps` | 100 |
+| `seeds` | 30 |
+| `AV_aggression` | 0.90 |
+| `human_influence_weight` | 1.00 |
+| Initial human aggression | `Normal(0.35, 0.08)`, clipped to `[0, 1]` |
+| Human susceptibility | `Uniform(0.02, 0.12)` |
 
-```python
-class AvResponseType(Enum):
-    ASSIMILATOR = "assimilator"
-    DISCOUNTER = "discounter"
-    REJECTER = "rejecter"
+**AV prevalence:** `0.00`, `0.25`, `0.50` → `n_av = int(N * prevalence)` (always integer for N=200).
 
-AV_INFLUENCE_WEIGHTS = {
-    AvResponseType.ASSIMILATOR: 0.50,
-    AvResponseType.DISCOUNTER: 0.00,
-    AvResponseType.REJECTER: -0.50,
-}
+**Environments (human response-type proportions):**
 
-ENVIRONMENTS = {
-    "mostly_assimilation": {"assimilator": 0.70, "discounter": 0.20, "rejecter": 0.10},
-    "mixed":               {"assimilator": 0.45, "discounter": 0.10, "rejecter": 0.45},
-    "mostly_rejection":    {"assimilator": 0.10, "discounter": 0.20, "rejecter": 0.70},
-}
+| Environment | Assimilator | Discounter | Rejecter |
+|-------------|------------:|-----------:|---------:|
+| `mostly_assimilation` | 70% | 20% | 10% |
+| `mixed` | 45% | 10% | 45% |
+| `mostly_rejection` | 10% | 20% | 70% |
 
-AV_PREVALENCE_LEVELS = [0.00, 0.25, 0.50]
-```
+**AV influence weights:** assimilator `+0.50`, discounter `0.00`, rejecter `-0.50`.
 
-### Dataclasses
+**Odd pairing rule (user-confirmed):** If agent count is odd, one randomly chosen agent is left unpaired and receives no update that timestep.
 
-**`HumanAgent`**
-- `agent_id: int`
-- `baseline_aggression: float` — observed and updated state
-- `susceptibility: float`
-- `av_response_type: AvResponseType`
-- `av_influence_weight: float` — set at init from type map
+---
 
-**`AVAgent`**
-- `agent_id: int`
-- `aggression: float` — fixed, default `0.90`
+## 4. Data structures
 
-### Runtime collections (`src/model.py`)
-
-- `agents: list[HumanAgent | AVAgent]`
-- `humans: list[HumanAgent]` — cached view
-- `avs: list[AVAgent]` — cached view
-- `rng: np.random.Generator` — seeded `numpy` generator
-
-### Metrics record (per run, per timestep)
+### Agent objects ([`src/agents.py`](git-cogs205b/abm-project/src/agents.py))
 
 ```python
 @dataclass
-class TimestepMetrics:
-    timestep: int
-    mean_human_aggression: float
-    var_human_aggression: float
-    mean_by_type: dict[str, float]          # assimilator / discounter / rejecter
-    mean_hh_encounter_aggression: float   # mean observed aggression in HH pairs
-    mean_ha_encounter_aggression: float   # mean observed aggression in HA pairs
-    n_hh_encounters: int
-    n_ha_encounters: int
+class HumanAgent:
+    baseline_aggression: float
+    susceptibility: float
+    av_response_type: Literal["assimilator", "discounter", "rejecter"]
+
+    @property
+    def av_influence_weight(self) -> float: ...
+
+@dataclass
+class AVAgent:
+    aggression: float  # fixed at 0.90
 ```
+
+Use a tagged union or `is_av: bool` when storing mixed populations in a list.
+
+### Trajectory record (per run, per timestep)
+
+One row per `(seed, av_prevalence, environment, timestep)`:
+
+| Column | Description |
+|--------|-------------|
+| `run_id` | Stable string ID for condition + seed |
+| `seed` | Integer seed |
+| `av_prevalence` | 0.0 / 0.25 / 0.5 |
+| `environment` | `mostly_assimilation` / `mixed` / `mostly_rejection` |
+| `timestep` | `0 … timesteps` |
+| `n_humans`, `n_avs` | Population counts (constant) |
+| `mean_human_aggression` | Mean human baseline aggression |
+| `var_human_aggression` | Variance of human baseline aggression |
+| `mean_aggression_assimilator` | By response type |
+| `mean_aggression_discounter` | By response type |
+| `mean_aggression_rejecter` | By response type |
+
+### Encounter metrics (separate file — see Section 6)
+
+Recorded in [`results/encounter_metrics.csv`](git-cogs205b/abm-project/results/encounter_metrics.csv), **not** merged into human baseline metrics.
 
 ---
 
-## 4. File-by-file implementation plan
+## 5. Update rules
+
+Implement in [`src/model.py`](git-cogs205b/abm-project/src/model.py). All human updates clip via `clip_aggression()` from [`src/agents.py`](git-cogs205b/abm-project/src/agents.py).
+
+### Human observes human (simultaneous, pre-update values)
+
+```text
+new_i = old_i + susceptibility_i * human_influence_weight * (old_j - old_i)
+new_j = old_j + susceptibility_j * human_influence_weight * (old_i - old_j)
+```
+
+Both `old_i` and `old_j` are read before either write. Each human appears in at most one pair per timestep, so cross-pair write conflicts cannot occur.
+
+### Human observes AV (human only updates)
+
+```text
+new_baseline = old_baseline
+             + susceptibility * av_influence_weight * (AV_aggression - old_baseline)
+```
+
+### AV rules
+
+- AV aggression never changes.
+- AV–AV pair: no update.
+- AV never updates when paired with a human.
+
+### Timestep execution order (critical)
+
+For each timestep `t = 1 … timesteps`:
+
+1. Snapshot all human `baseline_aggression` values (pre-update).
+2. Shuffle agents; form pairs; randomly skip one if odd.
+3. For each pair, compute tentative new values from snapshots only.
+4. Apply all tentative updates; clip humans to `[0, 1]`.
+5. Record state as timestep `t`.
+
+Initial state (before step 1) is recorded as timestep `0`.
+
+---
+
+## 6. Timestep convention
+
+**Strict rule — no exceptions:**
+
+- `timestep = 0`: initial state, no updates applied yet.
+- `timestep = 1`: after first update round.
+- `timestep = timesteps`: after final update round.
+- Total rows per run: **`timesteps + 1`** (101 when `timesteps = 100`).
+- Timesteps are unique integers `0, 1, 2, …, timesteps` within each run.
+- **Never** label both initial state and first update as `timestep = 0`.
+
+Enforce via `verify_timesteps(trajectory_df, timesteps)` in [`src/verification.py`](git-cogs205b/abm-project/src/verification.py).
+
+---
+
+## 7. Separated encounter metrics
+
+**Do not** average human and AV aggression into a single human-AV outcome metric.
+
+During each timestep's pairing phase, accumulate per-encounter-type statistics **before** updates are applied (using pre-update aggression):
+
+| Metric column | Definition |
+|---------------|------------|
+| `mean_human_hh_encounter_aggression` | Mean of both humans' pre-update baselines in human–human pairs |
+| `mean_human_ha_encounter_aggression` | Mean of human pre-update baseline in human–AV pairs |
+| `mean_av_ha_encounter_aggression` | Fixed AV aggression (`0.90`) in human–AV pairs — diagnostic only |
+| `n_hh_encounters`, `n_ha_encounters` | Encounter counts for transparency |
+
+Save to `encounter_metrics.csv` with the same `(run_id, seed, av_prevalence, environment, timestep)` keys as trajectories.
+
+**Interpretation guardrail:** Only `mean_human_hh_encounter_aggression` and `mean_human_ha_encounter_aggression` describe human behavior. `mean_av_ha_encounter_aggression` is a constant diagnostic confirming AV pairs were logged correctly.
+
+---
+
+## 8. Module-by-module implementation
 
 ### [`src/agents.py`](git-cogs205b/abm-project/src/agents.py)
 
 | Function / class | Responsibility |
 |------------------|----------------|
-| `AvResponseType` | Enum for response types |
-| `AV_INFLUENCE_WEIGHTS`, `ENVIRONMENTS` | Canonical parameter tables |
-| `HumanAgent` | Dataclass + `observed_aggression()` returning `baseline_aggression` |
-| `AVAgent` | Dataclass + `observed_aggression()` returning fixed `aggression` |
-| `clip_aggression(x) -> float` | `min(1.0, max(0.0, x))` |
-| `assign_response_types(n_humans, proportions, rng) -> list[AvResponseType]` | Largest-remainder method for exact counts summing to `n_humans`, then shuffle assignment |
-| `create_human_population(n, rng, environment) -> list[HumanAgent]` | Draw `baseline_aggression ~ Normal(0.35, 0.08)` clipped; `susceptibility ~ Uniform(0.02, 0.12)`; assign response types |
-| `create_av_population(n, aggression=0.90) -> list[AVAgent]` | Fixed-aggression AVs |
+| `clip_aggression(x)` | `min(1, max(0, x))` |
+| `AV_INFLUENCE_WEIGHTS` | Dict mapping response type → weight |
+| `assign_response_types(n, environment, rng)` | Multinomial assignment matching environment proportions |
+| `create_humans(n, environment, rng)` | Draw aggression + susceptibility; assign types |
+| `create_avs(n, aggression=0.90)` | Fixed-aggression AV list |
+| `build_population(n_agents, av_prevalence, environment, rng)` | Split into humans + AVs; shuffle combined list |
 
 ### [`src/model.py`](git-cogs205b/abm-project/src/model.py)
 
-| Function / class | Responsibility |
-|------------------|----------------|
-| `SimulationConfig` | Dataclass holding all run parameters (`n_agents`, `timesteps`, `av_prevalence`, `environment`, `seed`, weights, `av_aggression`) |
-| `MixedAutonomyModel` | Core simulation engine |
-| `MixedAutonomyModel.__init__(config)` | Build population: `n_av = round(n_agents * av_prevalence)`, `n_human = n_agents - n_av` |
-| `MixedAutonomyModel._pair_agents() -> list[tuple]` | Shuffle indices, return list of `(agent_a, agent_b)` pairs |
-| `MixedAutonomyModel._update_human_from_human(human, observed_aggression)` | Human-human update rule |
-| `MixedAutonomyModel._update_human_from_av(human, av_aggression)` | Human-AV update rule |
-| `MixedAutonomyModel._compute_updates(pairs) -> dict[int, float]` | For each pair, compute new baselines for all updating humans using **old** baselines; return `{agent_id: new_baseline}` |
-| `MixedAutonomyModel._apply_updates(updates)` | Write new baselines and clip |
-| `MixedAutonomyModel.step() -> TimestepMetrics` | One full timestep: pair, update, record |
-| `MixedAutonomyModel.run() -> list[TimestepMetrics]` | Run `timesteps` steps; return trajectory |
-| `MixedAutonomyModel.get_final_stats() -> dict` | Final mean, variance, means by type |
-
-**Update logic (explicit):**
-
-```text
-# Human observes human (both ends of pair):
-difference = observed_aggression - old_baseline
-new_baseline = old_baseline + susceptibility * 1.00 * difference
-
-# Human observes AV (human end only):
-difference = AV_aggression - old_baseline
-new_baseline = old_baseline + susceptibility * av_influence_weight * difference
-
-# Always:
-new_baseline = clip(new_baseline, 0, 1)
-```
-
-**Encounter aggression metrics:**
-
-- **HH encounter:** for each human-human pair, record both agents' `baseline_aggression` (pre-update); timestep mean = mean of all recorded values
-- **HA encounter:** record AV `aggression` and human `baseline_aggression` (pre-update); timestep mean = mean of all recorded values
-- **AV-AV pairs:** no updates, no encounter-metric contribution (rare; only when `av_prevalence >= 0.50`)
+| Function | Responsibility |
+|----------|----------------|
+| `pair_agents(agents, rng)` | Shuffle; chunk into pairs; return `(pairs, skipped_agent\|None)` |
+| `compute_human_human_delta(h_i, h_j)` | Returns `(new_i, new_j)` from pre-update values |
+| `compute_human_av_delta(human, av)` | Returns new human baseline only |
+| `apply_encounter(pair)` | Dispatch by agent types; return updates dict `{agent_id: new_value}` |
+| `record_timestep_metrics(humans, encounter_stats, meta)` | Build one trajectory + encounter row |
+| `run_single_simulation(params, seed)` | Full run; return `(trajectory_df, encounter_df)` |
 
 ### [`src/experiments.py`](git-cogs205b/abm-project/src/experiments.py)
 
-| Function / class | Responsibility |
-|------------------|----------------|
-| `ExperimentGrid` | Holds full factorial: 3 prevalences × 3 environments × 30 seeds = **270 runs** |
-| `run_single_simulation(config) -> tuple[pd.DataFrame, dict]` | Returns per-timestep trajectory DF + run metadata/final summary |
-| `run_full_grid(base_config) -> None` | Iterate all conditions; write CSVs |
-| `aggregate_across_seeds() -> pd.DataFrame` | Group by `(environment, av_prevalence)`; compute mean ± std of final outcomes and time-series |
-
-**Seed scheme (deterministic, hierarchical):**
-
-```python
-run_seed = base_seed + hash_offset(environment, av_prevalence, seed_index)
-```
-
-Use a fixed integer formula (e.g., `base_seed + env_id * 1000 + prev_id * 100 + seed_index`) — no Python `hash()` (not stable across sessions).
+| Function | Responsibility |
+|----------|----------------|
+| `EXPERIMENT_GRID` | 3 prevalences × 3 environments = **9 conditions** |
+| `condition_seed(base_seed, condition_idx, seed_idx)` | Hierarchical deterministic seed: e.g. `base_seed + condition_idx * 10_000 + seed_idx` |
+| `run_all_conditions(params)` | 9 × 30 = **270 runs** |
+| `aggregate_by_timestep(df)` | Mean ± std across seeds per condition per timestep |
+| `aggregate_final(df)` | Final-timestep mean/var summaries per condition |
 
 ### [`src/verification.py`](git-cogs205b/abm-project/src/verification.py)
 
-| Function | Check |
-|----------|-------|
-| `check_bounds(model)` | All human `baseline_aggression` in `[0, 1]` after every step |
-| `check_population_constant(model, initial_counts)` | `n_humans`, `n_avs` unchanged |
-| `check_seed_determinism(config)` | Two runs with same config produce identical final mean |
-| `check_null_condition(config_0pct_av)` | Trajectories at 0% AV nearly identical across environments (tolerance on final mean, e.g. `< 0.005`) |
-| `check_av_fixed(model)` | AV `aggression` unchanged from init through all steps |
-| `check_response_types_after_av_encounter()` | Isolated micro-simulation: one assimilator, one discounter, one rejecter each paired once with AV; assert direction of change |
-| `check_sensitivity_multi_seed(summary_df)` | Each condition has exactly 30 seed rows |
-| `run_all_checks(config) -> list[CheckResult]` | Orchestrator; raises or logs failures |
-
-**Response-type micro-test detail:**
-
-- Create 3 humans with identical `baseline_aggression=0.35`, `susceptibility=0.10`, one per response type
-- Pair each with one AV (`aggression=0.90`) for a single timestep
-- Assert: assimilator baseline **increases**, discounter **unchanged**, rejecter **decreases**
+Each function returns `(passed: bool, message: str)`. `run_all_verifications(...)` collects failures and raises `VerificationError` listing all failures (fail loudly).
 
 ### [`src/plotting.py`](git-cogs205b/abm-project/src/plotting.py)
 
-| Function | Output |
-|----------|--------|
-| `setup_plot_style()` | Apply SKILL.md `rcParams` and `COLORS` dict |
-| `plot_mean_aggression_over_time(agg_df, outpath)` | Line plot: x=timestep, y=mean aggression; lines = AV prevalence; facets or line styles = environment |
-| `plot_variance_over_time(agg_df, outpath)` | Same layout for variance |
-| `plot_final_mean_by_condition(summary_df, outpath)` | Grouped bar chart: environment × AV prevalence |
-| `plot_final_variance_by_condition(summary_df, outpath)` | Grouped bar chart for polarization |
-| `plot_mean_by_response_type(agg_df, outpath)` | Optional: lines per response type in mixed environment |
-| `generate_all_plots(results_dir)` | Called by entrypoint after grid completes |
-
-**Style rules (from SKILL.md):**
-
-- Okabe-Ito palette; environment colors: assimilation=blue, mixed=orange, rejection=green
-- AV prevalence: 0%=black/gray, 25%=blue, 50%=red/orange
-- Combine color + line style (solid/dashed/dotted for environments)
-- Save PNG at 300 dpi to `results/plots/`
+Apply SKILL.md `plt.rcParams` and Okabe-Ito `COLORS`. Environment colors: assimilation=blue, mixed=orange, rejection=green. Prevalence: 0%=black, 25%=blue, 50%=red/orange. Use line styles when overlaying many series.
 
 ### [`run_simulation.py`](git-cogs205b/abm-project/run_simulation.py)
 
-Entry point:
+1. Ensure `results/` and `results/plots/` exist.
+2. Run full experiment grid with default parameters.
+3. Run all runtime verification checks on a representative subset + full aggregated data.
+4. Write CSVs.
+5. Generate required plots.
+6. Print summary path and verification status.
 
-1. Parse optional CLI overrides (`--seeds`, `--timesteps`, `--output-dir`) with defaults from spec
-2. Create `results/` subdirectories
-3. Run `run_all_checks()` on a small smoke config **before** full grid
-4. Run full `ExperimentGrid`
-5. Aggregate seeds
-6. Call `generate_all_plots()`
-7. Print summary table and verification status to stdout
+---
 
-### [`Dockerfile`](git-cogs205b/abm-project/Dockerfile)
+## 9. Runtime verification checks
+
+Implement all eight checks from PROMPT.md / SKILL.md:
+
+| # | Function | What it checks |
+|---|----------|----------------|
+| 1 | `verify_bounds(trajectory_or_agents)` | All human aggression in `[0, 1]` |
+| 2 | `verify_population_constant(trajectory)` | `n_humans`, `n_avs` unchanged across timesteps |
+| 3 | `verify_seed_determinism(run_fn, params, seed)` | Two runs with same seed → identical trajectory |
+| 4 | `verify_null_condition(results)` | At 0% AV, changing environment produces negligible differential effect (or document that response type is inert without AV exposure) |
+| 5 | `verify_av_fixed(encounter_df)` | `mean_av_ha_encounter_aggression == 0.90` always |
+| 6 | `verify_response_types(model_fn)` | Micro-simulation: assimilator moves toward 0.90, discounter unchanged, rejecter moves away |
+| 7 | `verify_multi_seed_aggregation(summary)` | Each condition has exactly 30 seeds |
+| 8 | `verify_timesteps(trajectory, timesteps)` | Unique timesteps; exactly `timesteps + 1` rows; range `0…timesteps` |
+
+`run_simulation.py` calls `run_all_verifications()` after simulation; **exit non-zero** on failure.
+
+---
+
+## 10. Pytest test files
+
+Run from `abm-project/` with `pytest` (add `pytest.ini` or `pyproject.toml` with `pythonpath = .` so `src` imports resolve).
+
+### [`tests/test_agents.py`](git-cogs205b/abm-project/tests/test_agents.py)
+
+- `test_clip_aggression_below_zero` / `test_clip_aggression_above_one` / `test_clip_aggression_in_range`
+- `test_response_type_counts_match_environment` (statistical or exact for fixed seed + large n)
+- `test_av_influence_weights` (assimilator +0.5, discounter 0, rejecter -0.5)
+- `test_av_fixed_aggression_initialization`
+
+### [`tests/test_model.py`](git-cogs205b/abm-project/tests/test_model.py)
+
+- `test_human_human_uses_pre_update_values` (construct pair with known values; verify simultaneous update math)
+- `test_human_av_updates_human_only`
+- `test_av_never_updates` (aggression constant after many timesteps)
+- `test_timestep_indexing` (returns `0, 1, …, T`)
+- `test_no_duplicate_timesteps`
+- `test_trajectory_length_is_T_plus_1`
+- `test_same_seed_identical_trajectory`
+
+### [`tests/test_verification.py`](git-cogs205b/abm-project/tests/test_verification.py)
+
+- `test_bounds_check_passes_valid`
+- `test_bounds_check_fails_invalid` (inject out-of-range value)
+- `test_response_type_micro_simulation_passes`
+- `test_timestep_check_catches_duplicates`
+
+### [`tests/test_experiments.py`](git-cogs205b/abm-project/tests/test_experiments.py)
+
+- `test_grid_has_nine_conditions`
+- `test_hierarchical_seeds_stable`
+- `test_aggregation_has_thirty_seeds_per_condition`
+
+Use small `N_agents`, `timesteps`, and `seeds` in tests for speed (e.g., N=20, T=5, seeds=3) via fixture overrides — distinct from production defaults.
+
+---
+
+## 11. requirements.txt
+
+```
+numpy
+pandas
+matplotlib
+pytest
+```
+
+Pin only if reproducibility issues arise; start unpinned per course repo style. Every external import must appear here.
+
+---
+
+## 12. Dockerfile behavior
+
+Create [`git-cogs205b/abm-project/Dockerfile`](git-cogs205b/abm-project/Dockerfile) (separate from workspace-root SSH Dockerfile):
 
 ```dockerfile
-FROM python:3.11-slim
+FROM python:3.12-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -292,181 +356,90 @@ COPY . .
 CMD ["python", "run_simulation.py"]
 ```
 
-### [`README.md`](git-cogs205b/abm-project/README.md)
+**Behavior:**
 
-See Section 10 below.
-
----
-
-## 5. Parameter grid
-
-| Parameter | Values | Notes |
-|-----------|--------|-------|
-| `N_agents` | 200 | Fixed |
-| `timesteps` | 100 | Fixed |
-| `seeds` | 30 | Indices `0..29` |
-| `AV_aggression` | 0.90 | Fixed |
-| `human_influence_weight` | 1.00 | Fixed |
-| `AV prevalence` | 0.00, 0.25, 0.50 | → 0, 50, 100 AVs |
-| `Environment` | mostly_assimilation, mixed, mostly_rejection | See proportion table |
-| Initial human aggression | `Normal(0.35, 0.08)` clipped | Per human, per seed |
-| Susceptibility | `Uniform(0.02, 0.12)` | Per human, per seed |
-
-**Full factorial:** 3 × 3 × 30 = **270 simulation runs**
-
-**Population counts per prevalence:**
-
-| AV prevalence | AVs | Humans |
-|--------------|-----|--------|
-| 0.00 | 0 | 200 |
-| 0.25 | 50 | 150 |
-| 0.50 | 100 | 100 |
+- Installs **only** from `requirements.txt` (no cached/local venv assumptions).
+- Default command runs the full simulation and writes to `results/`.
+- Tests run separately: `docker run --rm <image> pytest` (override CMD) or `docker build` + `docker run … pytest` as documented in README.
 
 ---
 
-## 6. Outputs (CSV schema)
+## 13. Outputs (CSVs)
 
-### Per-run trajectory: `results/trajectories/{env}_{prev}_{seed}.csv`
+| File | Contents |
+|------|----------|
+| `results/trajectories.csv` | All 270 runs × 101 timesteps — per-run human baseline stats + by-type means |
+| `results/encounter_metrics.csv` | Separated HH / HA-human / HA-AV encounter metrics per timestep |
+| `results/summary_by_timestep.csv` | Aggregated mean ± std across 30 seeds per condition per timestep |
+| `results/summary_final.csv` | Final-timestep mean/var and encounter summaries per condition |
 
-| Column | Description |
-|--------|-------------|
-| `seed`, `environment`, `av_prevalence`, `timestep` | Run identifiers |
-| `mean_human_aggression` | Population mean at timestep |
-| `var_human_aggression` | Population variance at timestep |
-| `mean_assimilator`, `mean_discounter`, `mean_rejecter` | Means by response type |
-| `mean_hh_encounter_aggression` | Mean observed aggression in HH pairs |
-| `mean_ha_encounter_aggression` | Mean observed aggression in HA pairs |
-| `n_hh_encounters`, `n_ha_encounters` | Encounter counts |
-
-### Per-run summary: `results/summaries/run_summary.csv` (one row per run)
-
-| Column | Description |
-|--------|-------------|
-| `seed`, `environment`, `av_prevalence` | Identifiers |
-| `final_mean_aggression`, `final_var_aggression` | Timestep 100 values |
-| `final_mean_assimilator`, `..._discounter`, `..._rejecter` | Final type means |
-| `initial_mean_aggression` | Timestep 0 (sanity) |
-
-### Aggregated: `results/summaries/aggregated_summary.csv`
-
-| Column | Description |
-|--------|-------------|
-| `environment`, `av_prevalence` | Group keys |
-| `mean_final_aggression`, `std_final_aggression` | Across 30 seeds |
-| `mean_final_variance`, `std_final_variance` | Across 30 seeds |
-| `n_seeds` | Should be 30 |
-
-### Aggregated time-series: `results/summaries/aggregated_trajectories.csv`
-
-- Mean and std of `mean_human_aggression` and `var_human_aggression` at each timestep, grouped by condition
+Column naming uses snake_case, consistent keys for merging: `av_prevalence`, `environment`, `seed`, `timestep`.
 
 ---
 
-## 7. Verification checks (implementation checklist)
+## 14. Plots (saved to `results/plots/`)
 
-| # | Check | When | Pass criterion |
-|---|-------|------|----------------|
-| 1 | Bounds | After every `step()` | `0 <= baseline <= 1` for all humans |
-| 2 | Population constant | After every `step()` | Human/AV counts match initialization |
-| 3 | Seed determinism | Pre-grid unit test | Identical `final_mean` bit-for-bit or within `1e-12` |
-| 4 | Null (0% AV) | Post-grid analysis | Final means across 3 environments differ by `< 0.005` (AV type assignment irrelevant) |
-| 5 | AV fixed | After full run | `av.aggression == 0.90` always |
-| 6 | Response types | Isolated micro-sim | Assimilator up, discounter flat, rejecter down after one AV encounter |
-| 7 | Multi-seed | Aggregated output | `n_seeds == 30` for all 9 conditions |
+**Required (5):**
 
-`run_simulation.py` should **exit non-zero** if checks 1–3, 5, 6, or 7 fail.
+1. **Mean human baseline aggression over time** — lines per condition (env × prevalence), shaded ±1 SD across seeds.
+2. **Variance in human baseline aggression over time** — same grouping; highlights polarization in `mixed`.
+3. **Final mean aggression by condition** — bar or point plot across 9 conditions.
+4. **Final variance by condition** — polarization comparison.
+5. **Human-human encounter aggression over time** — key norm-shift diagnostic.
 
----
+**Optional (if space permits):**
 
-## 8. Plotting plan
-
-**Required figures** (save to `results/plots/`):
-
-1. `mean_aggression_over_time.png` — 3 panels (one per environment) or single plot with 9 lines; x=timestep (0–100), y=mean human baseline aggression; error bands = ±1 std across seeds
-2. `variance_over_time.png` — same layout for variance (polarization diagnostic)
-3. `final_mean_by_condition.png` — grouped bars: x=AV prevalence, groups=environment, y=final mean aggression (seed-aggregated)
-4. `final_variance_by_condition.png` — grouped bars for final variance
-
-**Optional (if time permits):**
-
-5. `hh_encounter_aggression_over_time.png` — tests whether norm shift appears in later human-human encounters (key diagnostic from PROMPT.md)
-6. `final_aggression_distribution.png` — histograms of human baselines at t=100 for mixed environment across prevalences
+- Mean aggression by response type over time (faceted by environment).
+- Human-AV human aggression over time.
+- Histogram of final baseline aggression for selected conditions.
 
 ---
 
-## 9. README structure
+## 15. README structure
 
-```markdown
-# Mixed-Autonomy Traffic ABM
+[`git-cogs205b/abm-project/README.md`](git-cogs205b/abm-project/README.md) sections:
 
-## Overview
-- Research question and main hypothesis (2–3 sentences)
-
-## Model specification
-- Agent types and attributes
-- Initial value distributions
-- Update rules (human-human, human-AV, AV no-update)
-- Pairing topology (shuffle + sequential pairs)
-- Experimental conditions table (3×3 grid)
-- Default parameters
-
-## How to run
-- Local: `pip install -r requirements.txt && python run_simulation.py`
-- Docker: `docker build -t abm . && docker run -v $(pwd)/results:/app/results abm`
-
-## Results
-- Brief summary of aggregated findings (mean shift, rejection, polarization)
-- Embed or link to the 4 required plots
-- Reference key CSV files
-
-## Verification
-- List of checks run and expected pass behavior
-- Note any tolerances used (null condition)
-
-## Reflection on accuracy and trust
-- When to trust results (all checks pass, pattern across seeds)
-- When to distrust (from PROMPT.md/SKILL.md failure modes)
-- Limitations: toy model, no spatial structure, simultaneous update assumption
-
-## Project layout
-- File tree with one-line descriptions
-```
+1. **Overview** — research question and one-paragraph model summary.
+2. **Model specification**
+   - Agent types and parameters (table)
+   - Update rules (human–human, human–AV)
+   - Timestep convention
+   - Experimental grid (3×3)
+   - Encounter metric definitions (emphasize separation)
+3. **How to run**
+   - `pip install -r requirements.txt`
+   - `python run_simulation.py`
+   - `pytest`
+   - Docker build/run commands
+4. **Results** — brief interpretation of saved outputs referencing plot filenames; note which conditions support norm shift / rejection / polarization.
+5. **Verification** — list runtime checks and what failure means.
+6. **Reflection on accuracy and trust**
+   - Model limitations (no spatial structure, toy mixing topology)
+   - Determinism and seed sensitivity
+   - What the agent (LLM) implemented vs. what was manually verified
+   - Honest assessment of confidence in results
 
 ---
 
-## 10. Dockerfile / environment plan
-
-- **Base image:** `python:3.11-slim`
-- **requirements.txt:** `numpy>=1.26,<2`, `pandas>=2.0`, `matplotlib>=3.8`
-- **No GPU, no Jupyter** — CLI-only reproducible batch run
-- **Volume mount:** document mounting `results/` for persisting outputs outside container
-- Add `results/` to [`.gitignore`](git-cogs205b/.gitignore) (or local `abm-project/.gitignore`)
-
----
-
-## 11. Risks and ambiguities (resolved or flagged)
+## 16. Risks and resolved ambiguities
 
 | Item | Resolution |
 |------|------------|
-| Human-human update direction | **Both update simultaneously** (user confirmed) |
-| Pairing algorithm | **Shuffle + sequential pairs** (user confirmed) |
-| AV-AV pairs at 50% prevalence | Possible (~25 pairs when 100 AVs); no updates; exclude from encounter metrics or record separately with `n_aa_encounters` |
-| Response-type count rounding | Use **largest-remainder** so counts sum exactly to `n_humans` |
-| 0% AV null check | Expect environments to converge; small differences only from different response-type labels (no AV exposure) — assert final means within tight tolerance |
-| Order effects within timestep | **Synchronous update** from pre-step baselines |
-| Filename casing | Normalize to `PROMPT.md`, `SKILL.md` per project spec |
-| Scientific interpretation | README must distinguish mean shift vs variance (polarization); do not over-claim from single seed |
+| Odd agent pairing | One random agent skipped per timestep (user confirmed) |
+| Simultaneous HH updates | Snapshot pre-update values; apply all pair deltas after full pass |
+| 0% AV null check | Environment differences should not matter; verify trajectories are statistically similar across environments at 0% AV |
+| Large CSV size | 270 × 101 ≈ 27k trajectory rows — acceptable; no per-agent time series needed |
+| Import path | Use `src` package with `PYTHONPATH=.` or `pip install -e .` omitted; prefer `pythonpath` in pytest config for simplicity |
 
 ---
 
-## 12. Implementation order
+## 17. Implementation order
 
-1. `agents.py` — types, factories, clip helper
-2. `model.py` — single-run engine + metrics
-3. `verification.py` — micro-tests and orchestrator
-4. `experiments.py` — grid runner + CSV writers
-5. `plotting.py` — figures from aggregated CSVs
-6. `run_simulation.py` — wire together
-7. `requirements.txt`, `Dockerfile`, `README.md`
-8. Rename `prompt.md`/`skill.md` → canonical casing; save this document as `PLAN.md`
-9. Smoke run (1 seed, all conditions) → full 30-seed run → verify outputs
+1. `src/agents.py` + `tests/test_agents.py`
+2. `src/model.py` + `tests/test_model.py`
+3. `src/verification.py` + `tests/test_verification.py`
+4. `src/experiments.py` + `tests/test_experiments.py`
+5. `src/plotting.py`
+6. `run_simulation.py`, `requirements.txt`, `Dockerfile`
+7. Run `pytest` then `python run_simulation.py`
+8. Write `README.md` and save approved plan as `PLAN.md`

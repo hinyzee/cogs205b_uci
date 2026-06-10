@@ -1,10 +1,11 @@
-"""Plotting utilities for the mixed-autonomy ABM."""
+"""Matplotlib plotting utilities for simulation results."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 COLORS = {
@@ -25,10 +26,16 @@ ENV_COLORS = {
     "mostly_rejection": COLORS["green"],
 }
 
-ENV_STYLES = {
-    "mostly_assimilation": "-",
-    "mixed": "--",
-    "mostly_rejection": ":",
+PREVALENCE_COLORS = {
+    0.0: COLORS["black"],
+    0.25: COLORS["blue"],
+    0.5: COLORS["red"],
+}
+
+PREVALENCE_STYLES = {
+    0.0: {"linestyle": "-", "marker": "o"},
+    0.25: {"linestyle": "--", "marker": "s"},
+    0.5: {"linestyle": "-.", "marker": "^"},
 }
 
 ENV_LABELS = {
@@ -37,21 +44,17 @@ ENV_LABELS = {
     "mostly_rejection": "Mostly rejection",
 }
 
-PREV_COLORS = {
-    0.0: COLORS["gray"],
-    0.25: COLORS["blue"],
-    0.50: COLORS["red"],
+PREVALENCE_LABELS = {
+    0.0: "0% AV",
+    0.25: "25% AV",
+    0.5: "50% AV",
 }
 
-PREV_LABELS = {
-    0.0: "0% AVs",
-    0.25: "25% AVs",
-    0.50: "50% AVs",
-}
+ENVIRONMENT_ORDER = ["mostly_assimilation", "mixed", "mostly_rejection"]
+PREVALENCE_ORDER = [0.0, 0.25, 0.5]
 
 
-def setup_plot_style() -> None:
-    """Apply consistent matplotlib style."""
+def _apply_style() -> None:
     plt.rcParams.update(
         {
             "figure.dpi": 150,
@@ -62,203 +65,233 @@ def setup_plot_style() -> None:
             "xtick.labelsize": 10,
             "ytick.labelsize": 10,
             "legend.fontsize": 10,
-            "figure.facecolor": "white",
-            "axes.facecolor": "white",
         }
     )
 
 
-def plot_mean_aggression_over_time(agg_df: pd.DataFrame, outpath: Path) -> None:
-    """Plot mean human baseline aggression over time by condition."""
-    setup_plot_style()
-    environments = agg_df["environment"].unique()
-    fig, axes = plt.subplots(1, len(environments), figsize=(5 * len(environments), 4), sharey=True)
-    if len(environments) == 1:
-        axes = [axes]
-
-    for ax, env in zip(axes, environments):
-        env_data = agg_df[agg_df["environment"] == env]
-        for prev in sorted(env_data["av_prevalence"].unique()):
-            prev_data = env_data[env_data["av_prevalence"] == prev].sort_values("timestep")
-            ax.plot(
-                prev_data["timestep"],
-                prev_data["mean_human_aggression"],
-                color=PREV_COLORS.get(prev, COLORS["black"]),
-                linestyle=ENV_STYLES.get(env, "-"),
-                label=PREV_LABELS.get(prev, f"{prev:.0%} AVs"),
-            )
-            if "std_human_aggression" in prev_data.columns:
-                ax.fill_between(
-                    prev_data["timestep"],
-                    prev_data["mean_human_aggression"] - prev_data["std_human_aggression"],
-                    prev_data["mean_human_aggression"] + prev_data["std_human_aggression"],
-                    color=PREV_COLORS.get(prev, COLORS["black"]),
-                    alpha=0.15,
-                )
-        ax.set_title(ENV_LABELS.get(env, env))
-        ax.set_xlabel("Timestep")
-        ax.legend(loc="best", fontsize=8)
-
-    axes[0].set_ylabel("Mean human baseline aggression")
-    fig.suptitle("Mean aggression over time", y=1.02)
-    fig.tight_layout()
-    fig.savefig(outpath, bbox_inches="tight")
-    plt.close(fig)
+def _prevalence_pct(av_prevalence: float) -> str:
+    return f"{int(av_prevalence * 100)}%"
 
 
-def plot_variance_over_time(agg_df: pd.DataFrame, outpath: Path) -> None:
-    """Plot variance in human baseline aggression over time."""
-    setup_plot_style()
-    environments = agg_df["environment"].unique()
-    fig, axes = plt.subplots(1, len(environments), figsize=(5 * len(environments), 4), sharey=True)
-    if len(environments) == 1:
-        axes = [axes]
-
-    for ax, env in zip(axes, environments):
-        env_data = agg_df[agg_df["environment"] == env]
-        for prev in sorted(env_data["av_prevalence"].unique()):
-            prev_data = env_data[env_data["av_prevalence"] == prev].sort_values("timestep")
-            ax.plot(
-                prev_data["timestep"],
-                prev_data["mean_var_aggression"],
-                color=PREV_COLORS.get(prev, COLORS["black"]),
-                linestyle=ENV_STYLES.get(env, "-"),
-                label=PREV_LABELS.get(prev, f"{prev:.0%} AVs"),
-            )
-            if "std_var_aggression" in prev_data.columns:
-                ax.fill_between(
-                    prev_data["timestep"],
-                    prev_data["mean_var_aggression"] - prev_data["std_var_aggression"],
-                    prev_data["mean_var_aggression"] + prev_data["std_var_aggression"],
-                    color=PREV_COLORS.get(prev, COLORS["black"]),
-                    alpha=0.15,
-                )
-        ax.set_title(ENV_LABELS.get(env, env))
-        ax.set_xlabel("Timestep")
-        ax.legend(loc="best", fontsize=8)
-
-    axes[0].set_ylabel("Variance in human baseline aggression")
-    fig.suptitle("Variance in aggression over time", y=1.02)
-    fig.tight_layout()
-    fig.savefig(outpath, bbox_inches="tight")
-    plt.close(fig)
-
-
-def plot_final_mean_by_condition(summary_df: pd.DataFrame, outpath: Path) -> None:
-    """Grouped bar chart of final mean aggression by condition."""
-    setup_plot_style()
-    environments = list(summary_df["environment"].unique())
-    prevalences = sorted(summary_df["av_prevalence"].unique())
-    x = range(len(prevalences))
-    width = 0.25
-
+def _plot_grouped_bar(
+    final_summary_df: pd.DataFrame,
+    *,
+    value_col: str,
+    error_col: str | None,
+    ylabel: str,
+    title: str,
+    output_path: Path,
+) -> None:
+    """Grouped bar chart: x = AV prevalence, color = environment."""
+    _apply_style()
     fig, ax = plt.subplots(figsize=(8, 5))
-    for i, env in enumerate(environments):
-        env_data = summary_df[summary_df["environment"] == env]
-        means = [
-            env_data[env_data["av_prevalence"] == p]["mean_final_aggression"].values[0]
-            for p in prevalences
-        ]
-        offset = (i - len(environments) / 2 + 0.5) * width
-        ax.bar(
-            [xi + offset for xi in x],
-            means,
-            width,
-            label=ENV_LABELS.get(env, env),
-            color=ENV_COLORS.get(env, COLORS["black"]),
-        )
 
-    ax.set_xlabel("AV prevalence")
-    ax.set_ylabel("Final mean human baseline aggression")
-    ax.set_title("Final aggression by AV prevalence")
-    ax.set_xticks(list(x))
-    ax.set_xticklabels([PREV_LABELS.get(p, f"{p:.0%}") for p in prevalences])
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(outpath, bbox_inches="tight")
-    plt.close(fig)
+    n_envs = len(ENVIRONMENT_ORDER)
+    x = np.arange(len(PREVALENCE_ORDER))
+    bar_width = 0.8 / n_envs
 
+    for env_idx, environment in enumerate(ENVIRONMENT_ORDER):
+        env_df = final_summary_df[
+            final_summary_df["environment"] == environment
+        ].set_index("av_prevalence")
 
-def plot_final_variance_by_condition(summary_df: pd.DataFrame, outpath: Path) -> None:
-    """Grouped bar chart of final variance by condition."""
-    setup_plot_style()
-    environments = list(summary_df["environment"].unique())
-    prevalences = sorted(summary_df["av_prevalence"].unique())
-    x = range(len(prevalences))
-    width = 0.25
+        values = [env_df.loc[p, value_col] for p in PREVALENCE_ORDER]
+        x_positions = x + (env_idx - (n_envs - 1) / 2) * bar_width
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for i, env in enumerate(environments):
-        env_data = summary_df[summary_df["environment"] == env]
-        means = [
-            env_data[env_data["av_prevalence"] == p]["mean_final_variance"].values[0]
-            for p in prevalences
-        ]
-        offset = (i - len(environments) / 2 + 0.5) * width
-        ax.bar(
-            [xi + offset for xi in x],
-            means,
-            width,
-            label=ENV_LABELS.get(env, env),
-            color=ENV_COLORS.get(env, COLORS["black"]),
-        )
-
-    ax.set_xlabel("AV prevalence")
-    ax.set_ylabel("Final variance in human baseline aggression")
-    ax.set_title("Polarization under mixed AV responses")
-    ax.set_xticks(list(x))
-    ax.set_xticklabels([PREV_LABELS.get(p, f"{p:.0%}") for p in prevalences])
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(outpath, bbox_inches="tight")
-    plt.close(fig)
-
-
-def plot_hh_encounter_aggression_over_time(agg_df: pd.DataFrame, outpath: Path) -> None:
-    """Plot mean aggression during human-human encounters over time."""
-    setup_plot_style()
-    environments = agg_df["environment"].unique()
-    fig, axes = plt.subplots(1, len(environments), figsize=(5 * len(environments), 4), sharey=True)
-    if len(environments) == 1:
-        axes = [axes]
-
-    for ax, env in zip(axes, environments):
-        env_data = agg_df[agg_df["environment"] == env]
-        for prev in sorted(env_data["av_prevalence"].unique()):
-            prev_data = env_data[env_data["av_prevalence"] == prev].sort_values("timestep")
-            ax.plot(
-                prev_data["timestep"],
-                prev_data["mean_hh_encounter_aggression"],
-                color=PREV_COLORS.get(prev, COLORS["black"]),
-                linestyle=ENV_STYLES.get(env, "-"),
-                label=PREV_LABELS.get(prev, f"{prev:.0%} AVs"),
+        error_kw = {"capsize": 3, "elinewidth": 1}
+        if error_col is not None and error_col in final_summary_df.columns:
+            errors = [env_df.loc[p, error_col] for p in PREVALENCE_ORDER]
+            ax.bar(
+                x_positions,
+                values,
+                width=bar_width,
+                label=ENV_LABELS[environment],
+                color=ENV_COLORS[environment],
+                alpha=0.85,
+                yerr=errors,
+                error_kw=error_kw,
             )
-        ax.set_title(ENV_LABELS.get(env, env))
-        ax.set_xlabel("Timestep")
-        ax.legend(loc="best", fontsize=8)
+        else:
+            ax.bar(
+                x_positions,
+                values,
+                width=bar_width,
+                label=ENV_LABELS[environment],
+                color=ENV_COLORS[environment],
+                alpha=0.85,
+            )
 
-    axes[0].set_ylabel("Mean aggression in human-human encounters")
-    fig.suptitle("Human-human encounter aggression over time", y=1.02)
+    ax.set_xticks(x)
+    ax.set_xticklabels([_prevalence_pct(p) for p in PREVALENCE_ORDER])
+    ax.set_xlabel("AV prevalence")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.legend(title="Environment", loc="best", frameon=True)
+    ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
-    fig.savefig(outpath, bbox_inches="tight")
+    fig.savefig(output_path)
     plt.close(fig)
 
 
-def generate_all_plots(results_dir: Path) -> None:
-    """Generate all required and optional plots from aggregated CSVs."""
-    plots_dir = results_dir / "plots"
+def _plot_faceted_timeseries(
+    summary_df: pd.DataFrame,
+    *,
+    value_col: str,
+    ylabel: str,
+    title: str,
+    output_path: Path,
+) -> None:
+    """Three-panel time series: columns = environment, lines = AV prevalence."""
+    _apply_style()
+    fig, axes = plt.subplots(
+        1,
+        len(ENVIRONMENT_ORDER),
+        figsize=(13, 4.5),
+        sharey=True,
+    )
+
+    legend_handles: list = []
+    legend_labels: list[str] = []
+
+    for ax, environment in zip(axes, ENVIRONMENT_ORDER):
+        env_df = summary_df[summary_df["environment"] == environment]
+
+        for av_prevalence in PREVALENCE_ORDER:
+            group = env_df[env_df["av_prevalence"] == av_prevalence].sort_values(
+                "timestep"
+            )
+            style = PREVALENCE_STYLES[av_prevalence]
+            (line,) = ax.plot(
+                group["timestep"],
+                group[value_col],
+                label=PREVALENCE_LABELS[av_prevalence],
+                color=PREVALENCE_COLORS[av_prevalence],
+                linestyle=style["linestyle"],
+                marker=style["marker"],
+                markevery=10,
+                linewidth=1.5,
+                markersize=4,
+            )
+            if environment == ENVIRONMENT_ORDER[0]:
+                legend_handles.append(line)
+                legend_labels.append(PREVALENCE_LABELS[av_prevalence])
+
+        ax.set_title(ENV_LABELS[environment])
+        ax.set_xlabel("Timestep")
+        ax.grid(True, alpha=0.3)
+
+    axes[0].set_ylabel(ylabel)
+    fig.suptitle(title, y=1.02)
+    fig.legend(
+        legend_handles,
+        legend_labels,
+        title="AV prevalence",
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.02),
+        ncol=len(PREVALENCE_ORDER),
+        frameon=True,
+    )
+    fig.tight_layout()
+    fig.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_mean_aggression_over_time(
+    summary_df: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot mean human baseline aggression over time by environment panel."""
+    _plot_faceted_timeseries(
+        summary_df,
+        value_col="mean_human_aggression_mean",
+        ylabel="Mean human aggression",
+        title="Mean aggression over time",
+        output_path=output_path,
+    )
+
+
+def plot_variance_over_time(
+    summary_df: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot variance in human baseline aggression over time by environment panel."""
+    _plot_faceted_timeseries(
+        summary_df,
+        value_col="var_human_aggression_mean",
+        ylabel="Variance in human aggression",
+        title="Polarization over time",
+        output_path=output_path,
+    )
+
+
+def plot_final_mean_by_condition(
+    final_summary_df: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot final mean aggression grouped by AV prevalence and environment."""
+    _plot_grouped_bar(
+        final_summary_df,
+        value_col="final_mean_human_aggression",
+        error_col="final_std_human_aggression",
+        ylabel="Final mean aggression",
+        title="Final aggression by AV prevalence",
+        output_path=output_path,
+    )
+
+
+def plot_final_variance_by_condition(
+    final_summary_df: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot final variance grouped by AV prevalence and environment."""
+    _plot_grouped_bar(
+        final_summary_df,
+        value_col="final_mean_variance",
+        error_col="final_std_variance",
+        ylabel="Final variance in aggression",
+        title="Final polarization by AV prevalence",
+        output_path=output_path,
+    )
+
+
+def plot_human_human_encounter_aggression(
+    summary_df: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Plot human-human encounter aggression over time by environment panel."""
+    _plot_faceted_timeseries(
+        summary_df,
+        value_col="mean_human_hh_encounter_aggression_mean",
+        ylabel="Mean human-human aggression",
+        title="Human-human aggression after AV exposure",
+        output_path=output_path,
+    )
+
+
+def generate_all_plots(
+    summary_by_timestep: pd.DataFrame,
+    summary_final: pd.DataFrame,
+    plots_dir: Path,
+) -> None:
+    """Generate all required plots."""
     plots_dir.mkdir(parents=True, exist_ok=True)
-
-    agg_traj_path = results_dir / "summaries" / "aggregated_trajectories.csv"
-    agg_summary_path = results_dir / "summaries" / "aggregated_summary.csv"
-
-    agg_traj_df = pd.read_csv(agg_traj_path)
-    agg_summary_df = pd.read_csv(agg_summary_path)
-
-    plot_mean_aggression_over_time(agg_traj_df, plots_dir / "mean_aggression_over_time.png")
-    plot_variance_over_time(agg_traj_df, plots_dir / "variance_over_time.png")
-    plot_final_mean_by_condition(agg_summary_df, plots_dir / "final_mean_by_condition.png")
-    plot_final_variance_by_condition(agg_summary_df, plots_dir / "final_variance_by_condition.png")
-    plot_hh_encounter_aggression_over_time(
-        agg_traj_df, plots_dir / "hh_encounter_aggression_over_time.png"
+    plot_mean_aggression_over_time(
+        summary_by_timestep,
+        plots_dir / "mean_aggression_over_time.png",
+    )
+    plot_variance_over_time(
+        summary_by_timestep,
+        plots_dir / "variance_over_time.png",
+    )
+    plot_final_mean_by_condition(
+        summary_final,
+        plots_dir / "final_mean_by_condition.png",
+    )
+    plot_final_variance_by_condition(
+        summary_final,
+        plots_dir / "final_variance_by_condition.png",
+    )
+    plot_human_human_encounter_aggression(
+        summary_by_timestep,
+        plots_dir / "human_human_encounter_aggression.png",
     )

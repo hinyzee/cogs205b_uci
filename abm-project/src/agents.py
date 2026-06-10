@@ -1,135 +1,153 @@
-"""Agent types and population factories for the mixed-autonomy ABM."""
+"""Agent types, initialization, and population construction."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from typing import Literal
 
 import numpy as np
 
-from numpy.random import Generator
+AVResponseType = Literal["assimilator", "discounter", "rejecter"]
+EnvironmentName = Literal["mostly_assimilation", "mixed", "mostly_rejection"]
 
-
-class AvResponseType(Enum):
-    ASSIMILATOR = "assimilator"
-    DISCOUNTER = "discounter"
-    REJECTER = "rejecter"
-
-
-AV_INFLUENCE_WEIGHTS: dict[AvResponseType, float] = {
-    AvResponseType.ASSIMILATOR: 0.50,
-    AvResponseType.DISCOUNTER: 0.00,
-    AvResponseType.REJECTER: -0.50,
+AV_INFLUENCE_WEIGHTS: dict[AVResponseType, float] = {
+    "assimilator": 0.50,
+    "discounter": 0.00,
+    "rejecter": -0.50,
 }
 
-ENVIRONMENTS: dict[str, dict[str, float]] = {
-    "mostly_assimilation": {"assimilator": 0.70, "discounter": 0.20, "rejecter": 0.10},
-    "mixed": {"assimilator": 0.45, "discounter": 0.10, "rejecter": 0.45},
-    "mostly_rejection": {"assimilator": 0.10, "discounter": 0.20, "rejecter": 0.70},
+ENVIRONMENT_PROPORTIONS: dict[EnvironmentName, dict[AVResponseType, float]] = {
+    "mostly_assimilation": {
+        "assimilator": 0.70,
+        "discounter": 0.20,
+        "rejecter": 0.10,
+    },
+    "mixed": {
+        "assimilator": 0.45,
+        "discounter": 0.10,
+        "rejecter": 0.45,
+    },
+    "mostly_rejection": {
+        "assimilator": 0.10,
+        "discounter": 0.20,
+        "rejecter": 0.70,
+    },
 }
 
-AV_PREVALENCE_LEVELS: list[float] = [0.00, 0.25, 0.50]
-
-ENVIRONMENT_IDS: dict[str, int] = {
-    "mostly_assimilation": 0,
-    "mixed": 1,
-    "mostly_rejection": 2,
-}
-
-PREVALENCE_IDS: dict[float, int] = {0.00: 0, 0.25: 1, 0.50: 2}
+DEFAULT_AV_AGGRESSION = 0.90
+DEFAULT_HUMAN_INFLUENCE_WEIGHT = 1.00
+DEFAULT_INITIAL_AGGRESSION_MEAN = 0.35
+DEFAULT_INITIAL_AGGRESSION_STD = 0.08
+DEFAULT_SUSCEPTIBILITY_LOW = 0.02
+DEFAULT_SUSCEPTIBILITY_HIGH = 0.12
 
 
 def clip_aggression(value: float) -> float:
-    """Clip aggression to [0, 1]."""
-    return min(1.0, max(0.0, value))
+    """Clip human baseline aggression to [0, 1]."""
+    return float(min(1.0, max(0.0, value)))
 
 
 @dataclass
 class HumanAgent:
-    agent_id: int
     baseline_aggression: float
     susceptibility: float
-    av_response_type: AvResponseType
-    av_influence_weight: float
+    av_response_type: AVResponseType
+    agent_id: int
 
-    def observed_aggression(self) -> float:
-        return self.baseline_aggression
+    @property
+    def av_influence_weight(self) -> float:
+        return AV_INFLUENCE_WEIGHTS[self.av_response_type]
+
+    @property
+    def is_av(self) -> bool:
+        return False
 
 
 @dataclass
 class AVAgent:
-    agent_id: int
     aggression: float
+    agent_id: int
 
-    def observed_aggression(self) -> float:
-        return self.aggression
+    @property
+    def is_av(self) -> bool:
+        return True
+
+
+Agent = HumanAgent | AVAgent
 
 
 def assign_response_types(
-    n_humans: int,
-    proportions: dict[str, float],
-    rng: Generator,
-) -> list[AvResponseType]:
-    """Assign response types using largest-remainder method, then shuffle."""
-    type_order = [
-        AvResponseType.ASSIMILATOR,
-        AvResponseType.DISCOUNTER,
-        AvResponseType.REJECTER,
-    ]
-    keys = ["assimilator", "discounter", "rejecter"]
-
-    raw_counts = [proportions[k] * n_humans for k in keys]
-    floors = [int(c) for c in raw_counts]
-    remainders = [raw - fl for raw, fl in zip(raw_counts, floors)]
-    deficit = n_humans - sum(floors)
-
-    counts = floors[:]
-    for idx in np.argsort(remainders)[::-1][:deficit]:
-        counts[idx] += 1
-
-    assignments: list[AvResponseType] = []
-    for response_type, count in zip(type_order, counts):
-        assignments.extend([response_type] * count)
-
-    rng.shuffle(assignments)
-    return assignments
-
-
-def create_human_population(
     n: int,
-    rng: Generator,
-    environment: str,
+    environment: EnvironmentName,
+    rng: np.random.Generator,
+) -> list[AVResponseType]:
+    """Assign AV response types to n humans according to environment proportions."""
+    proportions = ENVIRONMENT_PROPORTIONS[environment]
+    types: list[AVResponseType] = ["assimilator", "discounter", "rejecter"]
+    counts = rng.multinomial(n, [proportions[t] for t in types])
+    assigned: list[AVResponseType] = []
+    for response_type, count in zip(types, counts):
+        assigned.extend([response_type] * count)
+    rng.shuffle(assigned)
+    return assigned
+
+
+def create_humans(
+    n: int,
+    environment: EnvironmentName,
+    rng: np.random.Generator,
+    *,
+    aggression_mean: float = DEFAULT_INITIAL_AGGRESSION_MEAN,
+    aggression_std: float = DEFAULT_INITIAL_AGGRESSION_STD,
+    susceptibility_low: float = DEFAULT_SUSCEPTIBILITY_LOW,
+    susceptibility_high: float = DEFAULT_SUSCEPTIBILITY_HIGH,
     start_id: int = 0,
 ) -> list[HumanAgent]:
-    """Create human agents with randomized aggression and susceptibility."""
-    proportions = ENVIRONMENTS[environment]
-    response_types = assign_response_types(n, proportions, rng)
-
-    aggressions = rng.normal(0.35, 0.08, size=n)
+    """Create human agents with initialized aggression and susceptibility."""
+    aggressions = rng.normal(aggression_mean, aggression_std, size=n)
     aggressions = np.clip(aggressions, 0.0, 1.0)
-    susceptibilities = rng.uniform(0.02, 0.12, size=n)
+    susceptibilities = rng.uniform(susceptibility_low, susceptibility_high, size=n)
+    response_types = assign_response_types(n, environment, rng)
 
     humans: list[HumanAgent] = []
-    for i in range(n):
-        response_type = response_types[i]
+    for idx in range(n):
         humans.append(
             HumanAgent(
-                agent_id=start_id + i,
-                baseline_aggression=float(aggressions[i]),
-                susceptibility=float(susceptibilities[i]),
-                av_response_type=response_type,
-                av_influence_weight=AV_INFLUENCE_WEIGHTS[response_type],
+                baseline_aggression=float(aggressions[idx]),
+                susceptibility=float(susceptibilities[idx]),
+                av_response_type=response_types[idx],
+                agent_id=start_id + idx,
             )
         )
     return humans
 
 
-def create_av_population(
+def create_avs(
     n: int,
-    aggression: float = 0.90,
+    aggression: float = DEFAULT_AV_AGGRESSION,
     start_id: int = 0,
 ) -> list[AVAgent]:
     """Create fixed-aggression AV agents."""
     return [
-        AVAgent(agent_id=start_id + i, aggression=aggression) for i in range(n)
+        AVAgent(aggression=aggression, agent_id=start_id + idx) for idx in range(n)
     ]
+
+
+def build_population(
+    n_agents: int,
+    av_prevalence: float,
+    environment: EnvironmentName,
+    rng: np.random.Generator,
+    *,
+    av_aggression: float = DEFAULT_AV_AGGRESSION,
+) -> tuple[list[Agent], int, int]:
+    """Build a shuffled mixed population of humans and AVs."""
+    n_avs = int(n_agents * av_prevalence)
+    n_humans = n_agents - n_avs
+
+    humans = create_humans(n_humans, environment, rng, start_id=0)
+    avs = create_avs(n_avs, aggression=av_aggression, start_id=n_humans)
+
+    population: list[Agent] = humans + avs
+    rng.shuffle(population)
+    return population, n_humans, n_avs

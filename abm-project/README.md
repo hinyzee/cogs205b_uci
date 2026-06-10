@@ -1,47 +1,61 @@
 # Mixed-Autonomy Traffic ABM
 
-## Overview
+Toy agent-based model asking whether repeated exposure to aggressive autonomous vehicles (AVs) shifts human baseline driving aggression, and whether that effect depends on how humans interpret AV behavior.
 
-This agent-based model examines whether aggressive autonomous vehicles (AVs) can shift human driving norms in a mixed-autonomy traffic environment. The central question is whether AV behavior is treated as legitimate norm information, irrelevant, or negative outgroup behavior — and how that shapes population-level aggression over repeated random encounters.
-
-**Main hypothesis:** Aggressive AV exposure will not have one uniform effect. Assimilation-dominated populations should show rising mean aggression; rejection-dominated populations should show little increase or a decrease; mixed populations may show increased variance (polarization).
+At each timestep, 200 agents are randomly shuffled and paired into temporary encounters. Humans update baseline aggression after observing a partner. This is not a traffic simulator: there are no lanes, crashes, routing, or travel-time physics.
 
 ## Model specification
 
-### Agent types
+### Agent types and parameters
 
-**Human drivers** have:
-- `baseline_aggression` in [0, 1] — normal driving style
-- `susceptibility` in [0.02, 0.12] — update strength after observations
-- `av_response_type`: assimilator (+0.50 AV weight), discounter (0.00), or rejecter (-0.50)
+| Parameter | Default value |
+|-----------|---------------|
+| `N_agents` | 200 |
+| `timesteps` | 100 |
+| `seeds` | 30 |
+| `AV_aggression` | 0.90 |
+| `human_influence_weight` | 1.00 |
+| Initial human aggression | `Normal(0.35, 0.08)`, clipped to `[0, 1]` |
+| Human susceptibility | `Uniform(0.02, 0.12)` |
 
-**AV agents** have fixed aggression (default 0.90) and never update.
+**Human agents** have `baseline_aggression`, `susceptibility`, and an AV response type:
 
-### Initial values
+| Response type | `av_influence_weight` | Behavior |
+|---------------|----------------------:|----------|
+| Assimilator | +0.50 | Moves toward aggressive AV behavior |
+| Discounter | 0.00 | Ignores AV behavior |
+| Rejecter | −0.50 | Contrasts away from aggressive AV behavior |
 
-- `N_agents = 200`, `timesteps = 100`, `seeds = 30`
-- Human aggression: `Normal(0.35, 0.08)` clipped to [0, 1]
-- Susceptibility: `Uniform(0.02, 0.12)`
+**AV agents** have fixed aggression (0.90), no susceptibility, and never update.
 
 ### Update rules
 
-**Human observes human** (both update simultaneously):
-```
-new_baseline = old_baseline + susceptibility * 1.00 * (observed - old_baseline)
+**Human observes human** (simultaneous, pre-update values):
+
+```text
+new_i = old_i + susceptibility_i * human_influence_weight * (old_j - old_i)
+new_j = old_j + susceptibility_j * human_influence_weight * (old_i - old_j)
 ```
 
-**Human observes AV** (human only):
-```
+**Human observes AV** (human only updates):
+
+```text
 new_baseline = old_baseline + susceptibility * av_influence_weight * (AV_aggression - old_baseline)
 ```
 
-All values clipped to [0, 1] after updating.
+All human aggression values are clipped to `[0, 1]` after each update.
 
-### Pairing topology
+### Timestep convention
 
-Each timestep: shuffle all agents, pair sequentially (100 pairs). Pairings dissolve after the timestep.
+- `timestep = 0`: initial state (no updates applied)
+- `timestep = 1 … timesteps`: state after each update round
+- Each run produces exactly `timesteps + 1` rows (101 rows when `timesteps = 100`)
 
-### Experimental conditions
+### Experimental grid (3 × 3)
+
+**AV prevalence:** 0%, 25%, 50%
+
+**Human AV-response environments:**
 
 | Environment | Assimilators | Discounters | Rejecters |
 |-------------|-------------:|------------:|----------:|
@@ -49,97 +63,75 @@ Each timestep: shuffle all agents, pair sequentially (100 pairs). Pairings disso
 | Mixed | 45% | 10% | 45% |
 | Mostly rejection | 10% | 20% | 70% |
 
-Crossed with AV prevalence: 0%, 25%, 50% (270 runs total at 30 seeds).
+Total: 9 conditions × 30 seeds = 270 simulation runs.
+
+### Encounter metrics (separated)
+
+Human and AV behavior are tracked separately in `encounter_metrics.csv`:
+
+| Metric | Description |
+|--------|-------------|
+| `mean_human_hh_encounter_aggression` | Mean human aggression in human–human pairs (pre-update) |
+| `mean_human_ha_encounter_aggression` | Mean human aggression in human–AV pairs (pre-update) |
+| `mean_av_ha_encounter_aggression` | Fixed AV aggression in human–AV pairs (diagnostic only) |
 
 ## How to run
 
-**Local:**
 ```bash
 pip install -r requirements.txt
-python run_simulation.py
+python3 run_simulation.py
+pytest
 ```
 
-**With options:**
-```bash
-python run_simulation.py --seeds 30 --timesteps 100 --output-dir results
-```
+Docker: `docker build -t mixed-autonomy-abm .` then `docker run --rm mixed-autonomy-abm`.
 
-**Docker:**
-```bash
-docker build -t abm .
-docker run -v $(pwd)/results:/app/results abm
-```
+Outputs are written to `results/` (CSVs and `results/plots/*.png`).
 
 ## Results
 
-After running, outputs are saved to `results/`:
+Values below come from `results/summary_final.csv`, aggregated across 30 seeds per condition at the final timestep (`timestep = 100`). See `results/plots/` for figures.
 
-- `results/trajectories/` — per-run timestep CSVs
-- `results/summaries/run_summary.csv` — one row per simulation
-- `results/summaries/aggregated_summary.csv` — seed-averaged final outcomes
-- `results/summaries/aggregated_trajectories.csv` — seed-averaged time series
-- `results/plots/` — PNG figures
+| AV prevalence | Environment | Final mean aggression | Final variance | Final human–human encounter mean |
+|--------------:|-------------|----------------------:|---------------:|---------------------------------:|
+| 0% | Mostly assimilation | 0.351 | 0.000 | 0.351 |
+| 0% | Mixed | 0.350 | 0.000 | 0.350 |
+| 0% | Mostly rejection | 0.350 | 0.000 | 0.350 |
+| 25% | Mostly assimilation | 0.531 | 0.003 | 0.530 |
+| 25% | Mixed | 0.307 | 0.009 | 0.308 |
+| 25% | Mostly rejection | 0.067 | 0.005 | 0.070 |
+| 50% | Mostly assimilation | 0.613 | 0.018 | 0.613 |
+| 50% | Mixed | 0.263 | 0.046 | 0.269 |
+| 50% | Mostly rejection | 0.066 | 0.014 | 0.066 |
 
-Key plots:
-- `mean_aggression_over_time.png`
-- `variance_over_time.png`
-- `final_mean_by_condition.png`
-- `final_variance_by_condition.png`
-- `hh_encounter_aggression_over_time.png`
+### Toy-model interpretation
 
-Observed patterns (30 seeds, aggregated):
-- **Shared norm shift:** mostly-assimilation final mean rises from 0.35 (0% AV) to 0.60 (50% AV)
-- **Rejection:** mostly-rejection final mean falls from 0.35 (0% AV) to 0.06 (50% AV)
-- **Polarization:** mixed environment final variance rises from ~0.000006 (0% AV) to ~0.046 (50% AV), while mean aggression decreases to 0.26
+**Null check (0% AV).** In this simulation, final mean aggression stays near 0.350 across all three environments, with variance near zero. Under this toy ABM, AV response type has little effect when no AVs are present.
 
-## Verification
+**Mostly assimilation.** Final mean aggression rises with AV prevalence (0.351 → 0.531 → 0.613). In this simulation, the mostly-assimilation environment shows the upward pattern expected when humans treat AV behavior as norm information. Human–human encounter means track the same direction (0.351 → 0.530 → 0.613), suggesting the shift is visible beyond direct human–AV encounters.
 
-The simulation runs these checks automatically:
+**Mostly rejection.** Final mean aggression falls at 25% and 50% AV prevalence (0.350 → 0.067 → 0.066). Under this toy ABM, the mostly-rejection environment shows the flat-or-decreasing pattern expected when humans contrast away from aggressive AVs. Human–human encounter means follow a similar pattern (0.350 → 0.070 → 0.066).
 
-| Check | Criterion |
-|-------|-----------|
-| Bounds | All human aggression in [0, 1] |
-| Population | Human/AV counts constant |
-| Seed determinism | Same seed → identical results |
-| AV fixed | AV aggression never changes |
-| Response types | Assimilator up, discounter flat, rejecter down after AV encounter |
-| Null (0% AV) | Final means across environments differ by < 0.005 |
-| Multi-seed | 30 seeds per condition |
+**Mixed (polarization).** Final mean aggression is moderate at 50% AV (0.263), but final variance increases sharply (0.000 → 0.009 → 0.046). In this simulation, the mixed environment shows rising spread consistent with polarization: assimilators and rejecters update in opposite directions. See `plots/final_variance_by_condition.png` and `plots/variance_over_time.png`.
 
-`run_simulation.py` exits with code 1 if pre-grid checks (1–3, 5, 6) fail.
+**Human–human encounters.** Where baseline aggression shifts, human–human encounter means move in the same direction (e.g., mostly assimilation at 50% AV: baseline 0.613, human–human encounters 0.613). Under this toy ABM, changes are not confined to human–AV encounters alone.
 
-## Reflection on accuracy and trust
+These patterns depend on the model's assumptions: random mixing rather than road structure, fixed aggressive AVs, source-dependent human updating rules, and no traffic physics or institutional constraints. They describe behavior inside this simulation, not real-world driving.
 
-**Trust results when:**
-- All verification checks pass
-- Patterns are consistent across 30 seeds, not a single run
-- AV prevalence and response environment show distinguishable effects
-- Human-human encounter aggression rises after AV exposure in assimilation conditions (norm diffusion beyond direct AV encounters)
+## Reflection
 
-**Distrust results when:**
-- Model logic fails (bounds violations, population changes, non-deterministic seeds)
-- 0%, 25%, and 50% AV prevalence produce identical trajectories
-- AV response type has no effect at high AV prevalence
-- Conclusions rest on a single seed
+The model was implemented using bounded prompts in `PROMPT.md`, `PLAN.md`, and `SKILL.md` to keep assumptions stable across steps. Accuracy was checked with pytest tests (agents, model dynamics, verification helpers, experiment grid) and runtime verification after each full run: bounds checks, population constancy, seed determinism, null behavior at 0% AV prevalence, fixed AV aggression, response-type checks for assimilators/discounters/rejecters, timestep indexing, and multi-seed summaries (30 seeds per condition). Results are aggregated across seeds, not taken from single runs.
 
-**Limitations:** This is a toy ABM isolating exposure and social updating — not a traffic simulator. It uses random mixing rather than spatial structure, and simultaneous within-timestep updates.
+If tests and verification pass, the CSV outputs and plots can be trusted as faithful outputs of this toy model under its stated assumptions. They should not be interpreted as direct evidence about real human drivers or real traffic conditions.
 
-## Project layout
+## Project files
 
 ```
 abm-project/
-  PROMPT.md           Planning prompt
-  PLAN.md             Implementation plan
-  SKILL.md            Context-management artifact
-  README.md           This file
-  Dockerfile          Reproducible environment
-  requirements.txt    Python dependencies
-  run_simulation.py   Entry point
-  src/
-    agents.py         Agent types and population factories
-    model.py          Core simulation engine
-    experiments.py    Factorial grid and CSV writers
-    verification.py   Model verification checks
-    plotting.py       Figure generation
-  results/            Generated outputs (gitignored)
+  PROMPT.md          Planning prompt
+  PLAN.md            Implementation plan
+  SKILL.md           Context-management artifact
+  run_simulation.py  Main entry point
+  src/               Model implementation
+  tests/             Pytest suite
+  results/           Generated outputs (gitignored)
 ```

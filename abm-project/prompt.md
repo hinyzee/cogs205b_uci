@@ -14,7 +14,7 @@ This means aggressive AV exposure could have different population-level effects.
 
 The goal of the ABM is to compare these possible mechanisms in a simple theoretical environment. The model is not intended to be a realistic traffic simulator. It should not model lanes, crashes, road geometry, routing, or travel time. Instead, it should isolate repeated exposure, social updating, and source-dependent influence as the core mechanisms.
 
-Do not implement code yet. First produce a detailed implementation plan that can be curated and saved as `PLAN.md`.
+Before implementation, produce a detailed implementation plan that can be curated and saved as `PLAN.md`.
 
 ## Research question
 
@@ -32,9 +32,18 @@ If the population is mixed, higher AV prevalence may increase variance in human 
 
 ## Model overview
 
-The model should use a dynamic random-mixing topology. At each timestep, agents are randomly paired into temporary encounters. Pairings dissolve after the timestep and are redrawn at the next timestep.
+The model should use a dynamic random-mixing topology.
 
-This topology is a simplifying assumption. It treats AV exposure as a function of AV prevalence and repeated encounters rather than physical road structure. The purpose is to test the behavioral updating mechanism in an inspectable way.
+At each timestep:
+
+1. all agents are randomly shuffled
+2. agents are paired into temporary encounters
+3. humans observe the aggression of the paired agent
+4. all updates are computed from pre-update aggression values
+5. updates are applied after all pair updates are computed
+6. pairings dissolve and are redrawn next timestep
+
+This topology is a simplifying assumption. It treats AV exposure as a function of AV prevalence and repeated encounters rather than physical road structure.
 
 ## Agent types
 
@@ -100,13 +109,12 @@ susceptibility ~ Uniform(0.02, 0.12)
 
 ### Human observes another human
 
-Humans update toward other human drivers.
+When two humans are paired, both humans update simultaneously using their pre-update baselines.
 
 ```text
-difference = observed_aggression - old_baseline
+new_i = old_i + susceptibility_i * human_influence_weight * (old_j - old_i)
 
-new_baseline = old_baseline 
-             + susceptibility * human_influence_weight * difference
+new_j = old_j + susceptibility_j * human_influence_weight * (old_i - old_j)
 ```
 
 Use:
@@ -117,13 +125,11 @@ human_influence_weight = 1.00
 
 ### Human observes an AV
 
-Humans update according to their individual AV response type.
+When a human is paired with an AV, only the human updates.
 
 ```text
-difference = AV_aggression - old_baseline
-
 new_baseline = old_baseline
-             + susceptibility * av_influence_weight * difference
+             + susceptibility * av_influence_weight * (AV_aggression - old_baseline)
 ```
 
 Interpretation:
@@ -132,7 +138,7 @@ Interpretation:
 * zero `av_influence_weight`: human ignores the AV
 * negative `av_influence_weight`: human moves away from the aggressive AV
 
-After every update, clip aggression to `[0, 1]`.
+After every update, clip human aggression to `[0, 1]`.
 
 ```text
 new_baseline = min(1, max(0, new_baseline))
@@ -141,6 +147,20 @@ new_baseline = min(1, max(0, new_baseline))
 ### AVs
 
 AVs never update.
+
+If two AVs are paired, no update occurs.
+
+## Timestep convention
+
+Use this convention exactly.
+
+* The initial state is recorded as `timestep = 0`.
+* The first updated state is recorded as `timestep = 1`.
+* The final updated state is recorded as `timestep = timesteps`.
+* If `timesteps = 100`, each trajectory must contain exactly 101 rows: `0, 1, 2, ..., 100`.
+* There must be no duplicate timestep values within a run.
+
+Do not record the initial state and first updated state using the same timestep.
 
 ## Experimental conditions
 
@@ -177,9 +197,12 @@ Track and save the following outcomes for each simulation run:
 * final mean human baseline aggression
 * final variance in human baseline aggression
 * mean baseline aggression by AV response type
-* mean aggression during human-human encounters
-* mean aggression during human-AV encounters
+* mean human aggression in human-human encounters
+* mean human aggression in human-AV encounters
+* fixed AV aggression in human-AV encounters, if useful as a diagnostic
 * summary statistics across seeds
+
+Do not average human aggression and fixed AV aggression into one ambiguous human-AV encounter metric. Keep human behavior metrics separate from AV behavior.
 
 ## Key diagnostics
 
@@ -195,7 +218,7 @@ The strongest evidence for a broader norm shift is not just higher aggression du
 
 The implementation must include simulation-specific verification checks.
 
-Include checks for:
+Include runtime verification functions for:
 
 1. **Bounds check**
 
@@ -207,7 +230,7 @@ Include checks for:
 
 3. **Seed determinism**
 
-   * running the same condition with the same seed produces identical results
+   * running the same condition with the same seed produces the same trajectory
 
 4. **Null check**
 
@@ -227,13 +250,98 @@ Include checks for:
 
    * results are summarized across multiple seeds, not based on a single run
 
-## You should distrust your results if...
+8. **Timestep check**
 
-You should distrust your results if any of the basic model logic fails. For example, the results are not trustworthy if AVs change aggression over time, human aggression values leave the `[0, 1]` range, population size changes across timesteps, or the same seed does not reproduce the same trajectory.
+   * each trajectory has unique timesteps
+   * each trajectory has exactly `timesteps + 1` rows
+   * timesteps run from `0` to `timesteps`
 
-You should also distrust the scientific result if the main manipulation does not matter. For example, if 0%, 25%, and 50% AV prevalence produce nearly identical trajectories, or if AV response type has no effect even when AV prevalence is high, then the model is not actually testing the intended mechanism.
+The project should fail loudly if core verification checks fail.
 
-Finally, be cautious if the result only appears for one random seed. The conclusion should depend on the pattern across multiple seeds, not on a single lucky simulation run.
+## Test files
+
+In addition to runtime verification, create formal pytest tests.
+
+Use this structure:
+
+```text
+tests/
+  test_agents.py
+  test_model.py
+  test_verification.py
+  test_experiments.py
+```
+
+### Required tests
+
+`tests/test_agents.py` should test:
+
+* `clip_aggression()` clips values below 0 and above 1
+* response type assignment produces the expected counts
+* AV influence weights match the intended values
+* AVs are initialized with fixed aggression
+
+`tests/test_model.py` should test:
+
+* human-human updates are simultaneous and use pre-update baselines
+* human-AV updates affect only the human
+* AVs never update
+* timestep indexing is `0, 1, ..., timesteps`
+* no duplicate timesteps are produced
+* a run with `timesteps = T` produces `T + 1` trajectory rows
+* same seed produces identical trajectories
+
+`tests/test_verification.py` should test:
+
+* bounds check passes for valid aggression values
+* bounds check fails for out-of-range human aggression
+* response-type micro-test passes
+* timestep check catches duplicate timesteps
+
+`tests/test_experiments.py` should test:
+
+* experiment grid produces the expected number of conditions
+* deterministic hierarchical seeds are stable
+* aggregation includes the expected number of seeds per condition
+
+These tests should be runnable with:
+
+```bash
+pytest
+```
+
+## Requirements and Docker
+
+Create a `requirements.txt` file containing every external package used by the project.
+
+At minimum include:
+
+```text
+numpy
+pandas
+matplotlib
+pytest
+```
+
+The Dockerfile must install from `requirements.txt` using:
+
+```bash
+pip install --no-cache-dir -r requirements.txt
+```
+
+Do not rely on local virtual environments, cached packages, or manually installed packages outside `requirements.txt`.
+
+The Docker image should run:
+
+```bash
+python run_simulation.py
+```
+
+It is acceptable if tests are run separately with:
+
+```bash
+pytest
+```
 
 ## Required project structure
 
@@ -246,13 +354,20 @@ abm-project/
   SKILL.md
   README.md
   Dockerfile
+  requirements.txt
   run_simulation.py
   src/
+    __init__.py
     agents.py
     model.py
     experiments.py
     verification.py
     plotting.py
+  tests/
+    test_agents.py
+    test_model.py
+    test_verification.py
+    test_experiments.py
   results/
 ```
 
@@ -262,8 +377,9 @@ The implementation should include:
 
 * `PROMPT.md` containing this planning prompt
 * `PLAN.md` containing the curated implementation plan
-* a project-specific `SKILL.md` used as a context-management artifact
+* `SKILL.md` as the context-management artifact
 * ABM implementation code
+* pytest test files
 * `run_simulation.py`, which reproducibly runs the simulation and saves results
 * a `results/` folder with CSV outputs and plots
 * a `Dockerfile` that reproduces the environment
@@ -279,6 +395,12 @@ The project should run with:
 python run_simulation.py
 ```
 
+The tests should run with:
+
+```bash
+pytest
+```
+
 ## Context-management artifact
 
 Create a project-specific `SKILL.md` that helps preserve model assumptions and coding constraints across prompts.
@@ -287,8 +409,11 @@ The `SKILL.md` should include:
 
 * model assumptions
 * update rules
+* timestep convention
 * allowed parameter values
 * verification rules
+* testing rules
+* visualization standards
 * coding conventions
 * common failure modes
 
@@ -306,13 +431,15 @@ Save raw trajectories and summary results to CSV files.
 
 Save plots to the `results/` folder.
 
+Use `matplotlib` for all plots.
+
 Avoid unnecessary complexity. The model should be small enough to explain and verify.
 
 ## Planning instruction
 
-Do NOT write code yet.
+Before implementation, produce a detailed implementation plan that can be saved as `PLAN.md`.
 
-Produce a detailed implementation plan that includes:
+The plan should include:
 
 1. scientific model summary
 2. file-by-file implementation plan
@@ -320,11 +447,13 @@ Produce a detailed implementation plan that includes:
 4. functions/classes to implement
 5. parameter grid
 6. update logic
-7. verification tests
-8. expected outputs
-9. plotting plan
-10. README outline
-11. Dockerfile/environment plan
-12. possible risks or ambiguities to resolve before coding
+7. timestep convention
+8. verification functions
+9. pytest test plan
+10. expected outputs
+11. plotting plan
+12. README outline
+13. requirements and Dockerfile plan
+14. possible risks or ambiguities to resolve before coding
 
 The plan should be specific enough that it can be saved as `PLAN.md` and used to implement the model.

@@ -2,11 +2,11 @@
 
 ## Purpose
 
-Use this skill when planning, implementing, modifying, or verifying the mixed-autonomy traffic ABM.
+Use this skill when planning, implementing, modifying, testing, or verifying the mixed-autonomy traffic ABM.
 
 The model tests whether aggressive autonomous vehicles produce a shared human norm shift, rejection, or polarization depending on how human drivers respond to AV behavior.
 
-The skill should preserve project-specific assumptions across prompts so the implementation does not drift.
+This skill preserves project-specific assumptions across prompts so the implementation does not drift.
 
 ## Core model idea
 
@@ -79,13 +79,12 @@ Use these AV prevalence levels:
 
 ### Human observes another human
 
-Humans update toward other human drivers.
+When two humans are paired, both update simultaneously using pre-update baseline aggression values.
 
 ```text
-difference = observed_aggression - old_baseline
+new_i = old_i + susceptibility_i * human_influence_weight * (old_j - old_i)
 
-new_baseline = old_baseline
-             + susceptibility * human_influence_weight * difference
+new_j = old_j + susceptibility_j * human_influence_weight * (old_i - old_j)
 ```
 
 Use:
@@ -96,13 +95,11 @@ human_influence_weight = 1.00
 
 ### Human observes an AV
 
-Humans update according to their individual AV response type.
+When a human is paired with an AV, only the human updates.
 
 ```text
-difference = AV_aggression - old_baseline
-
 new_baseline = old_baseline
-             + susceptibility * av_influence_weight * difference
+             + susceptibility * av_influence_weight * (AV_aggression - old_baseline)
 ```
 
 Interpretation:
@@ -123,6 +120,36 @@ AVs never update.
 
 Do not modify AV aggression during the simulation.
 
+If two AVs are paired, no update occurs.
+
+## Timestep and trajectory rules
+
+Always use this timestep convention:
+
+* Record the initial state as `timestep = 0`.
+* The first updated state must be `timestep = 1`.
+* The final updated state must be `timestep = timesteps`.
+* A run with `timesteps = 100` must produce 101 trajectory rows.
+* Timestep values must be unique within each run.
+
+Never allow the initial state and first update to both be labeled as timestep 0.
+
+## Encounter metric rules
+
+Keep human behavior metrics separate from AV behavior.
+
+Preferred metrics:
+
+* `mean_human_aggression`
+* `var_human_aggression`
+* `mean_human_hh_encounter_aggression`
+* `mean_human_ha_encounter_aggression`
+* `mean_av_ha_encounter_aggression`, optional diagnostic
+
+Do not interpret a metric that averages human aggression and fixed AV aggression together as a human behavioral outcome.
+
+The key diagnostic for norm shift is whether human-human encounter aggression changes after AV exposure.
+
 ## Main outcomes
 
 Track and save:
@@ -132,8 +159,8 @@ Track and save:
 * final mean human baseline aggression
 * final variance in human baseline aggression
 * mean baseline aggression by AV response type
-* mean aggression during human-human encounters
-* mean aggression during human-AV encounters
+* mean human aggression during human-human encounters
+* mean human aggression during human-AV encounters
 * summary statistics across seeds
 
 ## Interpretation rules
@@ -148,33 +175,99 @@ Do not interpret one simulation run as the result. Always summarize across seeds
 
 The strongest evidence for a broader norm shift is not only higher aggression during AV encounters. It is higher aggression in human-human encounters after AV exposure.
 
-## Required verification checks
+## Runtime verification rules
 
-Before trusting results, verify:
+Use verification functions to check model logic before interpreting results.
 
-* all human aggression values remain in `[0, 1]`
-* population size remains constant
-* AV aggression remains fixed
-* the same seed reproduces the same trajectory
-* 0% AV prevalence behaves as a null condition
-* assimilators move toward AV aggression after AV encounters
-* discounters do not update from AV encounters
-* rejecters move away from AV aggression after AV encounters
-* results are summarized across multiple seeds
+Required checks:
 
-## You should distrust your results if...
+* all human aggression values stay in `[0, 1]`
+* population size stays constant
+* AV aggression never changes
+* same seed reproduces the same trajectory
+* assimilators move toward AV aggression
+* discounters do not update from AVs
+* rejecters move away from AV aggression
+* 0% AV condition behaves as a null condition
+* each condition has the expected number of seeds
+* each trajectory has unique timesteps
+* each trajectory has exactly `timesteps + 1` rows
+* each trajectory has timesteps from `0` to `timesteps`
 
-You should distrust your results if any basic model logic fails.
+If any core check fails, do not interpret the results.
 
-Examples:
+## Pytest test rules
 
-* AVs change aggression over time
-* human aggression values leave `[0, 1]`
-* population size changes across timesteps
-* the same seed does not reproduce the same trajectory
-* AV response type has no effect when AV prevalence is high
-* 0%, 25%, and 50% AV prevalence produce nearly identical results in all environments
-* results only appear for one random seed
+In addition to runtime verification, include formal pytest tests.
+
+Use this structure:
+
+```text
+tests/
+  test_agents.py
+  test_model.py
+  test_verification.py
+  test_experiments.py
+```
+
+### Required test coverage
+
+`test_agents.py` should test:
+
+* clipping below 0 and above 1
+* response-type assignment counts
+* AV influence weights
+* fixed AV initialization
+
+`test_model.py` should test:
+
+* simultaneous human-human updating from pre-update values
+* human-AV updates affect only the human
+* AVs never update
+* timestep indexing is `0, 1, ..., timesteps`
+* no duplicate timesteps
+* trajectory length is `timesteps + 1`
+* same seed gives identical trajectories
+
+`test_verification.py` should test:
+
+* bounds check passes for valid values
+* bounds check fails for invalid values
+* response-type micro-test passes
+* timestep verification catches duplicate timesteps
+
+`test_experiments.py` should test:
+
+* experiment grid creates expected condition counts
+* hierarchical seeds are deterministic
+* aggregation reports expected seed counts
+
+All tests should run with:
+
+```bash
+pytest
+```
+
+## Dependency rules
+
+Every imported external package must appear in `requirements.txt`.
+
+Minimum expected packages:
+
+```text
+numpy
+pandas
+matplotlib
+pytest
+```
+
+The Dockerfile must install packages through `requirements.txt`:
+
+```bash
+pip install --no-cache-dir -r requirements.txt
+```
+
+Do not rely on local virtual environments, cached packages, or packages manually installed outside `requirements.txt`.
 
 ## Coding conventions
 
@@ -186,6 +279,7 @@ Prefer:
 * NumPy
 * pandas
 * matplotlib
+* pytest for formal tests
 
 Keep the model simple and inspectable.
 
@@ -198,17 +292,26 @@ abm-project/
   SKILL.md
   README.md
   Dockerfile
+  requirements.txt
   run_simulation.py
   src/
+    __init__.py
     agents.py
     model.py
     experiments.py
     verification.py
     plotting.py
+  tests/
+    test_agents.py
+    test_model.py
+    test_verification.py
+    test_experiments.py
   results/
 ```
 
 `python run_simulation.py` must run the full simulation and save outputs to `results/`.
+
+`pytest` must run formal tests.
 
 Avoid hidden global state. Pass parameters explicitly where possible.
 
@@ -282,14 +385,6 @@ Mostly rejection: green
 
 Do not rely only on color. Use line styles or markers when comparing multiple conditions.
 
-Example:
-
-```text
-solid line: mostly assimilation
-dashed line: mixed
-dotted line: mostly rejection
-```
-
 ### Required plots
 
 At minimum, create:
@@ -298,11 +393,12 @@ At minimum, create:
 2. Variance in human baseline aggression over time
 3. Final mean aggression by condition
 4. Final variance or polarization by condition
+5. Human-human encounter aggression over time
 
 Optional useful plots:
 
 * mean aggression by response type
-* human-human encounter aggression over time
+* human-AV human aggression over time
 * distribution of final baseline aggression
 
 ### Plot titles
@@ -316,17 +412,10 @@ Mean aggression over time
 Variance in aggression over time
 Final aggression by AV prevalence
 Polarization under mixed AV responses
+Human-human aggression after AV exposure
 ```
 
 Avoid vague or overly long titles.
-
-Bad examples:
-
-```text
-Simulation Results
-Aggression Plot
-Graph of Agent-Based Model Results Across Many Conditions
-```
 
 ## Common failure modes
 
@@ -335,10 +424,13 @@ Watch for:
 * accidentally updating AV aggression
 * treating all humans as the same AV response type
 * forgetting to clip aggression to `[0, 1]`
-* confusing temporary encounter behavior with baseline aggression
+* recording timestep 0 twice
+* producing duplicate timesteps
 * reporting one seed as if it were the result
+* averaging human and AV aggression into one ambiguous human-AV outcome
 * interpreting a mean shift as polarization
 * failing to save results reproducibly
+* forgetting to include imported packages in `requirements.txt`
 * letting the implementation drift into a traffic simulator instead of a toy ABM
 * creating plots with inconsistent colors or unreadable labels
 
@@ -346,6 +438,6 @@ Watch for:
 
 When editing code, make one bounded change at a time.
 
-After each major change, run the relevant verification checks.
+After each major change, run the relevant tests and verification checks.
 
-Do not interpret simulation results until all checks pass.
+Do not interpret simulation results until all runtime checks and pytest tests pass.

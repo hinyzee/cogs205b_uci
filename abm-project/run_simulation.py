@@ -1,97 +1,72 @@
 #!/usr/bin/env python3
-"""Entry point for the mixed-autonomy traffic ABM."""
+"""Run the full mixed-autonomy ABM experiment grid and save outputs."""
 
 from __future__ import annotations
 
-import argparse
 import sys
 from pathlib import Path
 
-from src.experiments import ExperimentGrid, run_full_grid
-from src.model import SimulationConfig
+from src.experiments import (
+    DEFAULT_PARAMS,
+    aggregate_by_timestep,
+    aggregate_final,
+    run_all_conditions,
+)
+from src.model import SimulationParams
 from src.plotting import generate_all_plots
-from src.verification import run_all_checks, run_simulation_checks, print_check_results
+from src.verification import VerificationError, run_all_verifications
 
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Run mixed-autonomy traffic ABM simulations"
-    )
-    parser.add_argument(
-        "--seeds", type=int, default=30, help="Number of random seeds per condition"
-    )
-    parser.add_argument(
-        "--timesteps", type=int, default=100, help="Number of simulation timesteps"
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        default="results",
-        help="Directory for CSV outputs and plots",
-    )
-    parser.add_argument(
-        "--base-seed", type=int, default=42, help="Base seed for hierarchical seeding"
-    )
-    return parser.parse_args()
+RESULTS_DIR = Path("results")
+PLOTS_DIR = RESULTS_DIR / "plots"
 
 
 def main() -> int:
-    args = parse_args()
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "trajectories").mkdir(exist_ok=True)
-    (output_dir / "summaries").mkdir(exist_ok=True)
-    (output_dir / "plots").mkdir(exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    smoke_config = SimulationConfig(
-        n_agents=200,
-        timesteps=args.timesteps,
+    print("Running full experiment grid...")
+    trajectory_df, encounter_df = run_all_conditions(DEFAULT_PARAMS)
+
+    print("Running verification checks...")
+    sample_condition = SimulationParams(
+        n_agents=DEFAULT_PARAMS.n_agents,
+        timesteps=DEFAULT_PARAMS.timesteps,
         av_prevalence=0.25,
         environment="mixed",
-        seed=args.base_seed,
-        base_seed=args.base_seed,
+        av_aggression=DEFAULT_PARAMS.av_aggression,
+        human_influence_weight=DEFAULT_PARAMS.human_influence_weight,
+        seed=DEFAULT_PARAMS.base_seed,
     )
-
-    print("Running pre-grid verification checks...")
-    pre_results = run_simulation_checks(smoke_config)
-    pre_passed = print_check_results(pre_results)
-    if not pre_passed:
-        print("\nPre-grid verification FAILED. Aborting.")
+    try:
+        run_all_verifications(
+            trajectory_df,
+            encounter_df,
+            timesteps=DEFAULT_PARAMS.timesteps,
+            expected_seeds=DEFAULT_PARAMS.seeds,
+            params=sample_condition,
+        )
+    except VerificationError as exc:
+        print(exc, file=sys.stderr)
         return 1
 
-    print(f"\nRunning full experiment grid ({args.seeds} seeds per condition)...")
-    grid = ExperimentGrid(
-        n_agents=200,
-        timesteps=args.timesteps,
-        n_seeds=args.seeds,
-        base_seed=args.base_seed,
-    )
-    run_summary_df, _ = run_full_grid(grid, output_dir)
+    print("Aggregating results...")
+    summary_by_timestep = aggregate_by_timestep(trajectory_df, encounter_df)
+    summary_final = aggregate_final(trajectory_df, encounter_df)
 
-    print("\nRunning post-grid verification checks...")
-    post_results = run_all_checks(
-        smoke_config,
-        summary_df=run_summary_df,
-        expected_seeds=args.seeds,
-    )
-    all_passed = print_check_results(post_results)
-    if not all_passed:
-        print("\nPost-grid verification FAILED.")
-        return 1
+    print("Saving CSV outputs...")
+    trajectory_df.to_csv(RESULTS_DIR / "trajectories.csv", index=False)
+    encounter_df.to_csv(RESULTS_DIR / "encounter_metrics.csv", index=False)
+    summary_by_timestep.to_csv(RESULTS_DIR / "summary_by_timestep.csv", index=False)
+    summary_final.to_csv(RESULTS_DIR / "summary_final.csv", index=False)
 
-    print("\nGenerating plots...")
-    generate_all_plots(output_dir)
+    print("Generating plots...")
+    generate_all_plots(summary_by_timestep, summary_final, PLOTS_DIR)
 
-    print("\nAggregated final mean aggression by condition:")
-    agg_summary = run_summary_df.groupby(["environment", "av_prevalence"])[
-        "final_mean_aggression"
-    ].agg(["mean", "std"])
-    print(agg_summary.to_string())
-
-    print(f"\nResults saved to {output_dir.resolve()}")
-    print("All verification checks passed.")
+    print("Simulation complete.")
+    print(f"Results saved to: {RESULTS_DIR.resolve()}")
+    print("Verification: all checks passed")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
